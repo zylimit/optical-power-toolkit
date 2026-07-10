@@ -29,6 +29,10 @@ PROMPT = (
     '"lat": GPS叠加的纬度(十进制度,N正S负;无则null), '
     '"lon": GPS叠加的经度(十进制度,E正W负;无则null), '
     '"address": 叠加里的街道地址行(无则null), '
+    '"addr_area": 地址里的 LGA/行政区名(如 Alimosho;无则null), '
+    '"addr_estate": 地址里的封闭小区/estate 名(无则null), '
+    '"addr_street": 门牌号+街名(如 13 Ogundimu St;无则null), '
+    '"near_street": 布尔——叠加地址里没有本街名、street 取的是最近可见街名时为 true,否则 false, '
     '"timestamp": 叠加里的日期时间(无则null), '
     '"legible": 盒子标牌和功率计读数是否都清晰可读(true/false)}\n'
     "不要猜看不清的字符：看不清就 legible=false、power_dbm=null。"
@@ -83,6 +87,8 @@ def ocr_one(item, api_key, model, retries=5, downscale=0):
                     "source_file": item.get("source_file"), "row": item["row"], "sheet": item.get("sheet"),
                     "box_name_image": d.get("box_name"), "power_dbm": d.get("power_dbm"),
                     "lat": d.get("lat"), "lon": d.get("lon"), "address": d.get("address"),
+                    "addr_area": d.get("addr_area"), "addr_estate": d.get("addr_estate"),
+                    "addr_street": d.get("addr_street"), "near_street": d.get("near_street"),
                     "timestamp": d.get("timestamp"), "legible": d.get("legible"),
                     "notes": "",
                 }
@@ -92,6 +98,7 @@ def ocr_one(item, api_key, model, retries=5, downscale=0):
         time.sleep(min(20, 2 * attempt))  # 退避，网络抖动时逐步拉长
     return {"source_file": item.get("source_file"), "row": item["row"], "sheet": item.get("sheet"),
             "box_name_image": None, "power_dbm": None, "lat": None, "lon": None, "address": None,
+            "addr_area": None, "addr_estate": None, "addr_street": None, "near_street": False,
             "timestamp": None, "legible": False, "notes": f"OCR_FAILED: {last}"}
 
 
