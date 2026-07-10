@@ -66,6 +66,12 @@ def _load_image(img_path, downscale):
     return raw, ("image/png" if img_path.lower().endswith(".png") else "image/jpeg")
 
 
+def result_path(out_dir, r):
+    # 带源文件 + sheet，避免不同文件相同 sheet 名/行号撞车
+    key = re.sub(r"[^0-9A-Za-z]+", "_", f"{r.get('source_file')}__{r.get('sheet')}")
+    return os.path.join(out_dir, f"{key}_{r['row']}.json")
+
+
 def ocr_one(item, api_key, model, retries=5, downscale=0):
     img_path = item["image"]
     raw, mime = _load_image(img_path, downscale)
@@ -126,12 +132,7 @@ def main(argv=None):
     if args.limit:
         todo = todo[:args.limit]
 
-    def result_path(r):
-        # 带源文件 + sheet，避免不同文件相同 sheet 名/行号撞车
-        key = re.sub(r"[^0-9A-Za-z]+", "_", f"{r.get('source_file')}__{r.get('sheet')}")
-        return os.path.join(args.out, f"{key}_{r['row']}.json")
-
-    pending = [r for r in todo if not os.path.exists(result_path(r))]
+    pending = [r for r in todo if not os.path.exists(result_path(args.out, r))]
     print(f"待识别 {len(todo)} 张(已完成 {len(todo)-len(pending)}，本次跑 {len(pending)})，{args.workers} 并发，模型 {args.model}")
     started = time.time()
     done = 0
@@ -140,7 +141,7 @@ def main(argv=None):
         for fut in as_completed(futs):
             r = futs[fut]
             res = fut.result()
-            with open(result_path(r), "w", encoding="utf-8") as f:
+            with open(result_path(args.out, r), "w", encoding="utf-8") as f:
                 json.dump(res, f, ensure_ascii=False)
             done += 1
             if done % 25 == 0 or done == len(pending):
