@@ -25,6 +25,8 @@ import os
 import re
 import sys
 
+import pt_rules
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -80,6 +82,15 @@ def reconcile(r, o):
     st, si = suffix(r.get("box_table")), suffix(o.get("box_name_image"))
     lat, lon = o.get("lat"), o.get("lon")
     addr = clean_addr(o.get("address"))
+
+    # 地址三段：area/estate 直接透传，street 先清孤立 "Off" 再标准化
+    area = (o.get("addr_area") or "").strip()
+    estate = (o.get("addr_estate") or "").strip()
+    raw_street = (o.get("addr_street") or "").strip()
+    if raw_street.lower() == "off":
+        raw_street = ""  # 孤立 "Off"（无后续街名）视为无效
+    near = bool(o.get("near_street") or False)  # 防御 None/非 bool 杂质值
+    street = pt_rules.standardize_street(raw_street, near)
 
     # 照片状态
     if not has_photo:
@@ -152,6 +163,7 @@ def reconcile(r, o):
 
     return {
         "box": r.get("box_table"), "power": power_final, "lat": lat, "lon": lon, "addr": addr,
+        "addr_area": area, "addr_estate": estate, "addr_street": street,
         "置信度": conf, "照片状态": photo, "功率核对": pchk, "盒子核对": bchk,
         "有坐标": has_coord, "有地址": has_addr, "可修坐标": 可修坐标, "主要问题": issue,
     }

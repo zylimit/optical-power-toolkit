@@ -31,11 +31,12 @@ if hasattr(sys.stdout, "reconfigure"):
 
 BASE_COLS = [
     "source_file", "sheet", "row", "cluster", "box_name", "power_dbm",
-    "lat", "lon", "address", "test_date", "pass_fail",
+    "lat", "lon", "address", "addr_area", "addr_estate", "addr_street", "test_date", "pass_fail",
     "conf", "photo_status", "power_check", "box_check",
     "has_coord", "has_addr", "fixable_coord", "main_issue",
     "box_image", "power_image_dbm", "model", "ocr_at",
 ]
+NEW_ADDR_COLS = ["addr_area", "addr_estate", "addr_street"]   # 旧库迁移要补的地址列
 REC_COLS = BASE_COLS + pt_rules.DERIVED_COLS   # 追加派生列(层级/合格/复测)
 
 SCHEMA = """
@@ -53,7 +54,8 @@ CREATE TABLE IF NOT EXISTS records (
     id           INTEGER PRIMARY KEY,
     source_file  TEXT, sheet TEXT, row INTEGER,
     cluster TEXT, box_name TEXT, power_dbm REAL,
-    lat REAL, lon REAL, address TEXT, test_date TEXT, pass_fail TEXT,
+    lat REAL, lon REAL, address TEXT, addr_area TEXT, addr_estate TEXT, addr_street TEXT,
+    test_date TEXT, pass_fail TEXT,
     conf TEXT, photo_status TEXT, power_check TEXT, box_check TEXT,
     has_coord TEXT, has_addr TEXT, fixable_coord TEXT, main_issue TEXT,
     box_image TEXT, power_image_dbm REAL, model TEXT, ocr_at TEXT,
@@ -79,9 +81,9 @@ CREATE INDEX IF NOT EXISTS idx_rec_pstat  ON records(power_status_);
 def connect(db):
     conn = sqlite3.connect(db)
     conn.executescript(SCHEMA)
-    # 迁移旧库：补上派生列（在建派生列索引之前）
+    # 迁移旧库：补上派生列和地址三列（在建派生列索引之前）
     have = {r[1] for r in conn.execute("PRAGMA table_info(records)")}
-    for col in pt_rules.DERIVED_COLS:
+    for col in pt_rules.DERIVED_COLS + NEW_ADDR_COLS:
         if col not in have:
             conn.execute(f"ALTER TABLE records ADD COLUMN {col} TEXT")
     conn.executescript(DERIVED_INDEX)
@@ -110,6 +112,7 @@ def build_records(rows, ocr_dir, model, ts):
             "source_file": r.get("source_file"), "sheet": r.get("sheet"), "row": r["row"],
             "cluster": r.get("cluster"), "box_name": rec["box"], "power_dbm": power,
             "lat": _to_float(rec["lat"]), "lon": _to_float(rec["lon"]), "address": rec["addr"],
+            "addr_area": rec["addr_area"], "addr_estate": rec["addr_estate"], "addr_street": rec["addr_street"],
             "test_date": o.get("timestamp") or r.get("date_table"), "pass_fail": r.get("passfail_table"),
             "conf": rec["置信度"], "photo_status": rec["照片状态"], "power_check": rec["功率核对"],
             "box_check": rec["盒子核对"], "has_coord": rec["有坐标"], "has_addr": rec["有地址"],
