@@ -164,12 +164,14 @@ def power_status(mag):
 _OFF_RE = re.compile(r"no street name|no name|unnamed", re.I)
 
 
-def standardize_street(street):
-    """无街名时按客户要求：取最近街名并加 Off 前缀。这里只处理'无街名'标记，
-    真实的最近街名需由 AI/geocode 提供（street 传入已是最近街名时自动加 Off）。"""
+def standardize_street(street, near_street=False):
+    """街名标准化：空或含无街名标记（no street name / no name / unnamed）返回空串；
+    near_street=True 时给街名加 Off 前缀（已以 Off 开头则不重复加，不分大小写）。"""
     s = (street or "").strip()
     if not s or _OFF_RE.search(s):
         return ""  # 无有效街名，待补
     if s.lower().startswith("off "):
         return s
+    if near_street:
+        return "Off " + s
     return s
