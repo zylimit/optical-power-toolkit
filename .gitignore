@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+pt_tmp/
+pt_data.sqlite
+*.csv
+*.xlsx
+onebox_power_test/
+onebox_auth.json
+logs/
