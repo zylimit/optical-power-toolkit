@@ -35,7 +35,11 @@ PROMPT = (
     '"near_street": 布尔——叠加地址里没有本街名、street 取的是最近可见街名时为 true,否则 false, '
     '"timestamp": 叠加里的日期时间(无则null), '
     '"legible": 盒子标牌和功率计读数是否都清晰可读(true/false)}\n'
-    "不要猜看不清的字符：看不清就 legible=false、power_dbm=null。"
+    "不要猜看不清的字符：看不清就 legible=false、power_dbm=null。\n"
+    "功率计 LCD 和盒子标牌经常不在同一焦平面（一个清晰一个模糊很常见）：两者各自独立判断清晰度、"
+    "分别就近取清晰的读数，互不牵连——不要因为其中一个模糊就把另一个也判 null 或不可读。\n"
+    "标牌拍摄角度倾斜时要逐字符辨认：任何一个字符不确定，整体就 legible=false。"
+    "禁止按常见的 FAT 命名格式(如 AREA+C#+Z#+H#+L#+S#)脑补缺失或模糊的字符。"
 )
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
