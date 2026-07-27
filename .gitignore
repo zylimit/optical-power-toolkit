@@ -8,3 +8,10 @@ pt_data.sqlite
 onebox_power_test/
 onebox_auth.json
 logs/
+data/
+Data_duplicates/
+*.sqlite
+*.log
+scripts/pt_ocr_tmp_*/
+.codex/
+.claude/scheduled_tasks.lock
