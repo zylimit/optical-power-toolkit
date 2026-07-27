@@ -1,5 +1,5 @@
 # Project: optical-power-toolkit
-_Last updated: 2026-07-28（Git 根迁移落地、TODO #8 闭合、新增 push 远端待办）_
+_Last updated: 2026-07-28（Git 根迁移落地、push 远端闭合、TODO #8/#9 闭合、push 机制认知订正）_
 
 ## Pinned（仅高置信"必须遵守"写入；受保护不可修订）
     - 图片绝不入库（信息安全硬约束）：DB 只存文本/数值，图片仅本地临时目录过一次 OCR，每个文件处理完立即删
@@ -54,7 +54,8 @@ _Last updated: 2026-07-28（Git 根迁移落地、TODO #8 闭合、新增 push �
     - 2026-07-14: 去重保留规则确定——同名组优先保留 PT原始数据-N 目录原件；改名组保留库内记录数最多的名字。副本移出不删（Data_duplicates/ 可恢复，非永久删除）
     - 2026-07-14: 复核默认改为压缩模式（1024px downscale）——A/B 实测识别率不降（压缩轮 box 救回率反超全分辨率轮），速度提 4 倍；pt_recheck.py 新增 --downscale 参数，默认 1024，测试 10/10 绿
     - 2026-07-14: "codex 名下 OCR失败"行判定为 CLI 故障信号、非照片本身问题——用户拍板"没把握的都重跑"，945 行 OAuth 断权期误标行重置 redo-suspect 重跑后 80% 翻案成功坐实此判断
-    - 2026-07-28: 迁移技术方案定为 subtree split + init + fetch + reset --mixed（理由：subtree split 一次性把子目录历史重写为根=本目录内容、保留全部 Phase 1-3 commit；reset --mixed 只动 HEAD+index 不碰工作树，满足"禁止 checkout 覆盖工作树"硬约束，9 个未提交修改与 35 个未跟踪数据全保住；不用 git filter-repo 因 subtree split 已够且零额外依赖；不用 checkout/clone 因会覆盖工作树）。远端 push 待用户确认（outward-facing 不可逆，force-with-lease 覆盖）
+    - 2026-07-28: 迁移技术方案定为 subtree split + init + fetch + reset --mixed（理由：subtree split 一次性把子目录历史重写为根=本目录内容、保留全部 Phase 1-3 commit；reset --mixed 只动 HEAD+index 不碰工作树，满足"禁止 checkout 覆盖工作树"硬约束，9 个未提交修改与 35 个未跟踪数据全保住；不用 git filter-repo 因 subtree split 已够且零额外依赖；不用 checkout/clone 因会覆盖工作树）。远端 push 已完成——实测为 clean fast-forward 非 force 覆盖：subtree split 保留基线 92dc13a 哈希（该 commit 只动本子目录文件，重写后 tree 不变→哈希不变），远端 main 停在该基线上故本地为其正常后代，`--force-with-lease` 退化为 FF
+    - 2026-07-28: push 机制认知订正——原预判"histories diverged 需 force 覆盖"是错的，subtree split 对"只动子目录文件的 commit"保持原哈希，故与既有 split 远端天然衔接为 FF；以后同类迁移先 `git ls-remote` 比对基线哈希再决定用 FF 还是 force
 
 ## TODO（权威待办清单）
     - [P2][OPEN][#1] recheck 临时 OCR 目录固定化改造效果核查——重启后已落地 json 复用以避免大文件重跑，但本次 Co-op City 大文件仍被白跑两次 110+ 张图，需排查复用机制为何未生效
@@ -64,13 +65,13 @@ _Last updated: 2026-07-28（Git 根迁移落地、TODO #8 闭合、新增 push �
     - [P2][OPEN][#6] .codex/sessions 会话日志膨胀根治（迁 D 盘或关持久化，目前靠手动清理）
     - [P3][OPEN][#7] OKOTA C1 12 TP_24092025V6 COMPLTD.xlsx.skip 可永久删除
     - [P0][CLOSED][#8] 将 `D:\Code\optical-power-toolkit` 安全迁移为独立 Git 仓库与 Worktree 根：保留项目历史、父仓库在 2026-07-10 `92dc13ad` 之后的 Phase 1-3 提交、当前未提交修改及大量未跟踪数据；迁移过程中禁止 checkout 覆盖工作树（Context：现有 `optical-power-toolkit-split` 分支与独立 GitHub 远端均停在 `92dc13ad`）——2026-07-28 完成，见 Done 首条
-    - [P1][OPEN][#9] 迁移后 push 远端——本地 main 11 条历史是 subtree 重写的、commit 哈希与远端旧基线对不上，push 须 `--force-with-lease` 覆盖远端 main（远端当前仅 1 条基线 commit，覆盖不丢真东西）（Context：origin = https://github.com/zylimit/optical-power-toolkit.git）
+    - [P1][CLOSED][#9] 迁移后 push 远端——本地 main 11 条历史是 subtree 重写的、commit 哈希与远端旧基线对不上，push 须 `--force-with-lease` 覆盖远端 main（远端当前仅 1 条基线 commit，覆盖不丢真东西）（Context：origin = https://github.com/zylimit/optical-power-toolkit.git）——2026-07-28 完成，实测为 clean fast-forward 非 force 覆盖（subtree split 保留基线 92dc13a 哈希，本地为远端正常后代），见 Done 首条
 
 ## In Progress
     - （无）复核工程已 100% 收官，见 Done；剩余均为待办清理项，见 TODO
 
 ## Done（最近完成的放前面）
-    - 2026-07-28: [infra] Git 根迁移落地——将本项目从父级聚合仓库 `D:\Code` 拆为独立 Git 仓库，根=`D:\Code\optical-power-toolkit`。执行方案：父仓库 `git subtree split --prefix=optical-power-toolkit -b opt-split-fresh` 拆出含 Phase 1-3 全历史的独立分支（11 条 commit，路径重写使根=本项目内容）→ 本目录 `git init -b main` → `git fetch /d/Code opt-split-fresh` → `git reset --mixed FETCH_HEAD`（只动 HEAD+index、不碰工作树，满足 Pinned "禁止 checkout 覆盖工作树"约束）→ `git remote add origin https://github.com/zylimit/optical-power-toolkit.git`；临时分支 opt-split-fresh 用完已从父仓库删除。验收证据（主 Agent 当场亲自取得，非自报）：`git rev-parse --show-toplevel` → `D:/Code/optical-power-toolkit`（git 根已纠正）；`git log --oneline` → 11 条完整历史保留（phase-1→2→3 + V1.0 基线 92dc13a，commit 哈希因 subtree 路径重写而变、内容不变）；工作树未动——9 个 modified（scripts/pt_ocr.py、pt_batch.py、pt_extract.py、pt_recheck.py、tests/test_pt_recheck.py、tests/test_pt_recheck_units.py、progress.md、.claude/feedback/FEEDBACK-INDEX.md、.claude/evidence/gate-block.log）+ 35 个 untracked（data/Data_duplicates/logs/.codex 等）一个没丢（evidence：上述命令当场输出）
+    - 2026-07-28: [infra] Git 根迁移落地——将本项目从父级聚合仓库 `D:\Code` 拆为独立 Git 仓库，根=`D:\Code\optical-power-toolkit`。执行方案：父仓库 `git subtree split --prefix=optical-power-toolkit -b opt-split-fresh` 拆出含 Phase 1-3 全历史的独立分支（11 条 commit，路径重写使根=本项目内容）→ 本目录 `git init -b main` → `git fetch /d/Code opt-split-fresh` → `git reset --mixed FETCH_HEAD`（只动 HEAD+index、不碰工作树，满足 Pinned "禁止 checkout 覆盖工作树"约束）→ `git remote add origin https://github.com/zylimit/optical-power-toolkit.git`；临时分支 opt-split-fresh 用完已从父仓库删除。验收证据（主 Agent 当场亲自取得，非自报）：`git rev-parse --show-toplevel` → `D:/Code/optical-power-toolkit`（git 根已纠正）；`git log --oneline` → 11 条完整历史保留（phase-1→2→3 + V1.0 基线 92dc13a，commit 哈希因 subtree 路径重写而变、内容不变）；工作树未动——9 个 modified（scripts/pt_ocr.py、pt_batch.py、pt_extract.py、pt_recheck.py、tests/test_pt_recheck.py、tests/test_pt_recheck_units.py、progress.md、.claude/feedback/FEEDBACK-INDEX.md、.claude/evidence/gate-block.log）+ 35 个 untracked（data/Data_duplicates/logs/.codex 等）一个没丢。push 已完成——clean fast-forward 非 force 覆盖：subtree split 保留基线 92dc13a 哈希（该 commit 只动本子目录文件，路径重写后 tree 不变→哈希不变），远端 main 停在该基线上故本地为其正常后代，`--force-with-lease` 退化为 FF；远端 main 现 13 条 commit（evidence：`git ls-remote origin main` → 860f2cffd04d9a7d3cf74c53d1540e41fe2d30b == 本地 main == origin/main；`git push` 输出 `92dc13a..860f2cf main -> main`）
     - 2026-07-14: 复核工程 100% 收官——全库剩余非 codex 硬样本 = 0；OCR失败全库仅剩 1 行（0.00%），对比 gemini 时代 1000+ 行失败。最终库态（332340 行）：无图 69.68% / 有图清晰 25.19% / 有图模糊 5.13%（codex 终审确认真糊）/ OCR失败 0.00%；box_check 通过 22.39% / 标牌糊未核对 6.04% / 后缀不符 1.89%（evidence：pt_data.sqlite 最终统计）
     - 2026-07-14: 业务交付物已导出——reports/问题行明细.csv（30774 行）+ reports/问题文件汇总.csv（672 文件）
     - 2026-07-14: 复核第八轮·终局（压缩模式）——Co-op City 268 行 + 嫌疑 945 行（OAuth 断权期误标）合计 1213 行/12 文件，26 分钟跑完，leg+971（80% 翻案成功）box+124；Co-op City .hold 已恢复原名并完成复核
