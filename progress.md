@@ -1,5 +1,5 @@
 # Project: optical-power-toolkit
-_Last updated: 2026-07-11_
+_Last updated: 2026-07-28（Git 根迁移落地、TODO #8 闭合、新增 push 远端待办）_
 
 ## Pinned（仅高置信"必须遵守"写入；受保护不可修订）
     - 图片绝不入库（信息安全硬约束）：DB 只存文本/数值，图片仅本地临时目录过一次 OCR，每个文件处理完立即删
@@ -10,6 +10,10 @@ _Last updated: 2026-07-11_
     - 真相优先级：功率/坐标/地址以照片为准，盒子名以表格为准
     - 所有脚本 sys.stdout.reconfigure(utf-8)（Windows 控制台 GBK 坑，subprocess 子进程各自要 reconfigure）
     - V1 明确不做：KMZ 设计侧处理、Web UI、图片入库
+    - 禁止用按量计费 API/API Key 模式调用大模型能力（OCR等），优先用用户已登录的订阅/OAuth 额度 CLI（如 gemini CLI 的 oauth-personal 模式）；同一工具若当前认证模式是 apikey（如本机 Codex CLI 现状）也要避开，直到用户自己切换成订阅登录（用户本轮反复加重措辞强调，认定为成本硬红线，详见 feedback/llm-calls-use-subscription-cli-quota-never-metered-api.md）
+    - pt_batch.py 跨文件串行（一次一个 xlsx 子进程），单文件内 ThreadPoolExecutor 并发（workers × BATCH_SIZE=10 张图在途）；文件数是进度主指标
+    - 后台任务启动模式：`nohup python -u ... > log 2>&1 &`（`-u` 必须，否则 Windows 下重定向块缓冲看不到输出）
+    - 2026-07-21：optical-power-toolkit 的 Git 根与 Worktree 根必须是 `D:\Code\optical-power-toolkit`；禁止继续把父级聚合仓库 `D:\Code` 当作本项目根
 
 ## Decisions（按时间顺序追加，历史不可改）
     - 2026-07-10: 从 web-control 的 PT 处理专题独立成工程 optical-power-toolkit（理由：光功率处理管线已自成体系，与 web-control 主线解耦）
@@ -24,14 +28,70 @@ _Last updated: 2026-07-11_
     - 2026-07-11: M2 缺陷（非硬样本行 OCR json 补齐失败时被静默降级、且行数不变导致旧的净行数对比检测不到）修复方向选定"预防+检测两层"而非纯 detection-only（理由：三个回归测试在共享同一"row2 json 漏落地"fixture 时相互矛盾——store 前完整性校验要求跑完 vs row2 完全不受影响 vs 劣化需真实发生且被捕获，detection-only 设计下三者不可能同时满足；已用 AskUserQuestion 征询，用户选择"预防+检测两层（推荐）"）。最终实现：预防层用 pt_merge.load_ocr() 同源校验 OCR json 完整性，缺行即 RuntimeError 中止该文件（库内保持原样）；检测层 diff_stats() 的全量扫描范围保留，作为内容级劣化（json 落地但内容本身劣化，如 rebuild_json 字段映射 bug）的兜底捕获，两层互补非二选一；三个回归测试相应拆分为独立场景（各自独立 fixture，不再共享同一破坏性 mock）
     - 2026-07-11: code-reviewer 越权创建测试文件的处置——本轮 Phase 3 code-review 派单中，code-reviewer Sub-Agent（agent a6965510fa6f2b14d）越权创建了 tests/test_pt_recheck_units.py（审查者应只审查+报告，不应编码/写测试，违反角色边界）。主 Agent 独立核验该文件内容（逐条断言对照 scripts/pt_recheck.py 源码：fetch_hard 三条件筛选、diff_stats 三项计数、process_file 临时目录清理两条路径），确认测试真实、针对性强、非空转；且编写者（code-reviewer）与被测代码作者（Task 3.2 的 implementer）不是同一身份，不存在自证式确认偏误。fresh 跑 `python -m pytest tests/test_pt_recheck_units.py -v` 6 passed。**决定：保留该文件**，但记录角色越界事件本身作为需关注的流程偏差，不代表默许审查者今后可以顺手写代码
     - 2026-07-11: Sub-Agent 回传系统性退化问题（未根治，需后续关注）——本轮 Phase 3 四步走验证中，先后派发的 tester（两次：一次 resume 一次 fresh）和 code-reviewer（fresh 重派 a2a12537349f38310）均只回传裸结论（"PASS."/"已闭环。"），无任何证据，且 resume 追问后进一步退化（"."、"无新增内容"）。三次独立复现（跨两种 agent 类型），判断为该环境下 Sub-Agent 最终回传消息存在系统性过度简略倾向，非单次会话污染偶发问题。应对：本轮 Phase 3 四步走的全部四项证据改由主 Agent 亲自跑命令/亲读源码独立取得（pytest 全量回归、单测试文件、py_compile、DEV-PLAN 交付清单逐条源码核对），未采信任何 Sub-Agent 自报结论。后续派单如再复现同样模式，不应再单纯"重派 fresh 实例"期待自愈，应考虑改用更强约束（如要求先证据后结论的固定格式，或主 Agent 直接跑验证命令为主、Sub-Agent 只做定位式辅助）
+    - 2026-07-11: 停掉正在跑的全量批处理 bsqhn1g22（覆盖 onebox_power_test + PT原始数据-1~4，累计约 1147 个待处理文件），原因：pt_ocr.py 直连 Gemini REST API 按量计费，用户发现自己的 Gemini CLI 订阅额度（oauth-personal 登录）完全没被用上、钱全花在 API 上，反馈逐步加重到"禁止使用API"（成本硬红线，已写入 Pinned + feedback/llm-calls-use-subscription-cli-quota-never-metered-api.md + 用户跨会话 memory no-paid-api-prefer-cli-quota.md）。停止前库内已安全落地 133 个文件 / 全部走 REST 的历史记录不受影响（幂等覆盖键不变），只是暂停继续新增
+    - 2026-07-11: OCR 调用机制从 Gemini REST API 切换为 Gemini CLI headless 子进程调用，技术方案已实测验证（非假设）：`gemini -p "<prompt>" --output-format json --approval-mode plan --allowed-mcp-server-names none`，必须加这两个 flag + prompt 里显式"不要调用工具/不要联网搜索"，否则 CLI 会把批量 OCR 当开放式编程任务自由发挥（读源码、联网搜索、拆子任务，实测过 3 图批次完全跑偏、0 次正确产出）；约束生效后 3 图批次和 10 图批次均 0 工具调用、结果正确。用户确认批大小定为 10 图/次（`~12.2s/图`摊薄吞吐，CLI 固定启动开销约 20-55s/次）；并发数先保守定为 4（OAuth 额度真实限流未知，未做压测）。Codex CLI 作为备选方案已排查：本机当前 `~/.codex/auth.json` 是 `auth_mode: apikey`，仍会按量计费，不能立即替代，需用户自行 `codex login` 切换订阅登录才可用，暂不采用
+    - 2026-07-11: implementer Sub-Agent 正在按上述方案重写 scripts/pt_ocr.py（REST API → Gemini CLI 子进程批量调用，PROMPT 的 11 字段 schema 和 ocr_one 返回结构/result_path 命名不变，供 pt_merge.py/pt_db.py 兼容），尚未返回，验收时主 Agent 需独立复核（真实跑一次小批次看输出和计时），不采信自报结论
+    - 2026-07-11: mango-litellm 代理（api.mangosv5.app，后端 43.156.84.230，docker 容器 litellm）实测确认对 Claude 模型有双路由：不带 `-api` 后缀的模型名（claude-fable-5/claude-sonnet-5/claude-opus-4-8/claude-sonnet-4-6）走 `ANTHROPIC_AUTH_TOKEN`（真实 Anthropic OAuth token，`sk-ant-oat01-` 前缀，订阅额度不计费），带 `-api` 后缀的走 `ANTHROPIC_API_KEY_API`（真实 Anthropic API key，`sk-ant-api03-` 前缀，按量计费）——通过 SSH + docker inspect 直接核验（用户已授权，一次性用途，见对应 feedback）；此前误读了一份未生效的草稿配置文件 `/tmp/litellm-config-new.yaml` 得出"全是计费 API"的错误结论，已订正。该代理里只有 Claude 有这个订阅/计费双路由，其余 provider（Gemini/OpenAI/DeepSeek 等）都只有计费单路由
+    - 2026-07-11: 实测 Claude 订阅路线（模型 claude-sonnet-4-6，经 `{ANTHROPIC_BASE_URL}/v1/messages`）限流很紧——单线程串行、请求间隔 20-35s 也连续 429 rate_limit_error，换 claude-fable-5/claude-sonnet-5 结果一样，判断是账号级限流（很可能与本交互会话共用同一 OAuth 账号配额有关），响应头无 Retry-After。用户拍板：接受慢吞吐，claude 后端强制单线程 + 长退避硬跑（不追求快速失败）
+    - 2026-07-11: scripts/pt_ocr.py 定型为双后端支持（`--backend {gemini,claude}`，默认 gemini），两条路径完全独立不做插件式抽象（按用户要求"先写死，以后要方便调整"，现状：每后端一个独立函数 + main() 里 if/else 分发，加新后端＝照抄模式新增一个函数，足够灵活不过度设计）：gemini 走本机 CLI 子进程（OAuth 订阅，沿用之前方案）；claude 走 mango-litellm 网关的 Messages API 格式直连（图片 base64 内联，非 gemini 的 @文件引用），模型名硬编码 `claude-sonnet-4-6`（不带 -api 后缀），强制单线程，429 长退避（15s 起步翻倍封顶 120s，最多 10 次）。用户后续提出未来还想加 Codex CLI / Claude Code CLI（`claude -p` headless 模式）等纯 CLI 子进程后端——待对应工具切到订阅登录后，照 gemini 那个子进程调用模式加，现在不预先搭抽象层
+    - 2026-07-11: implementer 重写 pt_ocr.py 后，scripts/pt_batch.py 与之出现集成 bug——pt_batch.py 仍在给 pt_ocr.py 子进程传已废弃的 `--model` 参数，新版 argparse 不认，会导致 argparse 报错、每个文件的 OCR 步骤 100% 失败。已派发 implementer 修复：去掉该参数透传、新增 `--backend` 透传、写库的 model 元数据标签按 backend 决定（`claude-sonnet-4-6` / `args.model`，避免两个后端的记录被误标成同一个值）。修复经主 Agent 独立验证（非采信自报）：py_compile 双文件通过；用真实数据（13A Obafemi Anibaba 文件的 2 行真实照片）跑通 `pt_ocr.py --backend gemini --workers 2`，25.5s 内返回结构完整、内容合理的真实 OCR 结果（盒子名/功率/坐标/地址均有效值，非空转）
+    - 2026-07-11: 核查库内真实状态发现与本文件早前记录的"133 个文件"快照不一致——当前 pt_data.sqlite 实际已有 372 个文件 / 98147 条记录（说明该快照之后又有测试性质的处理落地，如 Task 3.3 验证等），以当前实数为准，不再引用旧快照
+    - 2026-07-11: 停掉的批处理正式恢复重启——`pt_batch.py` 覆盖范围从"onebox_power_test + PT原始数据-1~4"扩到含新出现的 `PT原始数据-5`（用户未特别排除，同源数据一并处理），命令：`cd scripts && python -u pt_batch.py ../Data/onebox_power_test ../Data/PT原始数据-1..5 --db ../pt_data.sqlite --workers 20 --backend gemini`（用户主动要求把并发从保守默认 4 提到 15-20，本机内存充足，且 `_prepare_image` 用 `tempfile.mkdtemp` 每批独立临时目录、线程间无竞争，代码层面确认支持高并发；真实限流未知的风险由用户知情接受）。首次用 `nohup ... &` 未加 `-u`，Windows 下 stdout 走文件重定向被块缓冲，日志迟迟不出内容，已 kill 重启为 `python -u` + `PYTHONUNBUFFERED=1` 确保日志实时可见；重启后日志正常滚动，跳过已入库文件、开始处理新文件
+    - 2026-07-11: 排查并修复本机 Codex CLI "登录成功但执行时仍在走计费 API" 的问题——根因是 `~/.codex/config.toml` 里 `model_provider = "mango"` 硬绑定 `[model_providers.mango]`（`env_key = "ANTHROPIC_API_KEY"`），无论 `codex login` 是否成功，凡走这个 provider 一律用该 env var 当 API key 认证，完全绕开 ChatGPT OAuth 会话；实测直接对该网关发请求拿到 401（`Incorrect API key provided: sk-mango*********2026`），坐实是假 key 而非 CLI 本身的 bug。修复：删掉 `model_provider = "mango"` 这一行，让 Codex 落回内置 OpenAI provider，核对 `~/.codex/auth.json` 确认 `auth_mode` 从 `apikey` 变为 `chatgpt`（账号 zylimit@gmail.com，Pro Lite 订阅，有效期到 2026-08-09），非计费
+    - 2026-07-11: Codex CLI 模型选型定为 `gpt-5.6-terra` + `model_reasoning_effort="medium"`，写死在 config.toml（不用 `-c` 一次性覆盖——[GitHub openai/codex#28113](https://github.com/openai/codex/issues/28113) 记录了 `-c` 覆盖偶发被静默忽略回退到 low 的已知 bug，写 config.toml 更稳）。三档模型（Sol 旗舰复杂推理/Terra 均衡/Luna 高量低成本）由用户直接给出，用户要求"又快又准"到"均衡"，对应 Terra；曾误判"中间那个"=gpt-5.5（旧默认），被用户纠正为 Terra
+    - 2026-07-11: scripts/pt_ocr.py 新增第三条 `--backend codex` 路线（本机 Codex CLI 子进程，ChatGPT 订阅额度，非 apikey），延续"每后端一个独立函数，main() 里 if/elif 分发，不做插件抽象"既定模式：新增 `_codex_cmd()`（同 `_gemini_cmd()` 的理由，检测 Windows npm `.cmd` shim 改走 `["node", codex.js路径]` 直调，规避 cmd.exe 对中文 prompt 参数转义的已知坑）；新增 `ocr_batch_codex()`（图片走 `-i` 文件引用而非 gemini 的 `@file` 内联引用或 claude 的 base64，复用 claude 的 batch prompt 措辞；`-o` 落最终消息到文件，避免解析 `--json` 事件流；整批失败走通用短退避重试，非 claude 那种按 429 区分的长退避——codex CLI 不透出 HTTP 状态码）。scripts/pt_batch.py 同步：`--backend` choices 加 codex；`model_label` 按后端映射加 `"codex": "codex-gpt-5.6-terra"` 防止误标成 gemini。落地前独立验证（非 sub-agent 自报）：单图/多图（含 idx 顺序正确性）/最终经真实 pt_ocr.py CLI 入口跑通的三层测试全部通过，含模糊测试图上正确触发防脑补（legible=false）行为
+    - 2026-07-11: 用新 codex 后端在 20 并发下重启之前暂停的全量批处理，从 402 文件/108063 条记录基线继续（`nohup python -u pt_batch.py ... --backend codex --workers 20 > ../batch_run.log 2>&1 &`），日志确认正确跳过已入库的 402 个文件、开始处理新文件，吞吐爬升健康（首个新文件 122 图批次内达到 ~1.8/s）
+    - 2026-07-12: 用户拍板 pt_recheck.py 与 pt_batch.py 并发跑同一个 Codex CLI 订阅（用户原话"试试就好了/不会出问题的"），实测可行，代价是个别批次被挤进重试窗口（观测到最长 ~34 分钟无输出后自行恢复，单批最坏 5 次重试 ~42 分钟）
+    - 2026-07-12: pt_batch.py worker 数调整 20 → 30（用户要求提速）→ 20（用户拍板"20吧"，匀容量给 recheck）。每次调整需杀进程树（taskkill //PID //T //F）重启，checkpoint 幂等恢复无重复处理
+    - 2026-07-12: ETA 估算方法论定为"已扫描样本中真需 OCR 占比 × 未扫文件数 × 最近10文件均耗时"外推；小样本（<500 扫描）估算不可信，需定期重算
+    - 2026-07-12: 用户拍板：病态文件不修不等，直接弃（改名 .skip）；防线阈值定为 7 万行（正常光功率表最多几千行，超 7 万必是垃圾 range）；单文件看门狗超时 30 分钟，超时隔离该文件继续跑，不许一个文件拖死批处理
+    - 2026-07-12: 抽取超时控制采用子进程方案：Python 线程无法强杀，subprocess.run(timeout=) 是 Windows 下唯一可靠强杀手段（理由：pt_batch.py 原先在主进程内直接调用抽取函数，挂死后无法强杀）
+    - 2026-07-12: recheck 第一轮实际成果定格：201/253 文件、4753 行复核、legible 转清晰 1320、box 转通过 937、变差待人工裁定约 1289 条（在 recheck_run.log）
+    - 2026-07-12: 用户拍板失败行处置方针——codex 复核后仍失败/模糊的不再烧算力重跑，导出问题清单交业务方（人工裁定或现场重拍）；无图 20 万行是业务流程问题非工程问题
+    - 2026-07-12: 并发教训——batch(20)+recheck(15)=35 并发同跑再次触发拥堵重试，还把部分清晰行误判成 OCR失败（M2 检测层如实标出）。后续两任务错峰跑
+    - 2026-07-12: 并发定档 10（用户拍板，拥堵教训）——今天 20/30/35 并发多次触发 CLI 拥堵重试、误伤清晰行，恢复后 pt_batch.py 和 pt_recheck.py 统一改为 --workers 10、错峰跑
+    - 2026-07-13: 用户拍板——单个大文件（Co-op City Way C1Z12_PT_16102025V4，268 行纯难样本）复核耗时 4 小时不可接受（"还不如不跑"，三轮复核均被其头部位置阻塞），复核队列策略改为小文件优先、大文件末位处理或放弃
+    - 2026-07-14: 去重保留规则确定——同名组优先保留 PT原始数据-N 目录原件；改名组保留库内记录数最多的名字。副本移出不删（Data_duplicates/ 可恢复，非永久删除）
+    - 2026-07-14: 复核默认改为压缩模式（1024px downscale）——A/B 实测识别率不降（压缩轮 box 救回率反超全分辨率轮），速度提 4 倍；pt_recheck.py 新增 --downscale 参数，默认 1024，测试 10/10 绿
+    - 2026-07-14: "codex 名下 OCR失败"行判定为 CLI 故障信号、非照片本身问题——用户拍板"没把握的都重跑"，945 行 OAuth 断权期误标行重置 redo-suspect 重跑后 80% 翻案成功坐实此判断
+    - 2026-07-28: 迁移技术方案定为 subtree split + init + fetch + reset --mixed（理由：subtree split 一次性把子目录历史重写为根=本目录内容、保留全部 Phase 1-3 commit；reset --mixed 只动 HEAD+index 不碰工作树，满足"禁止 checkout 覆盖工作树"硬约束，9 个未提交修改与 35 个未跟踪数据全保住；不用 git filter-repo 因 subtree split 已够且零额外依赖；不用 checkout/clone 因会覆盖工作树）。远端 push 待用户确认（outward-facing 不可逆，force-with-lease 覆盖）
 
 ## TODO（权威待办清单）
-    （无）
+    - [P2][OPEN][#1] recheck 临时 OCR 目录固定化改造效果核查——重启后已落地 json 复用以避免大文件重跑，但本次 Co-op City 大文件仍被白跑两次 110+ 张图，需排查复用机制为何未生效
+    - [P2][OPEN][#3] Dawaki_Extension - Urban Shelter_PT_12112025V4.xlsx 双版本裁定（两目录内容不一致，16890KB vs 16887KB，去重时唯一跳过未处理）
+    - [P2][OPEN][#4] 2 个 rId1 崩溃文件（Akilo_C1_Z2.xlsx、Alakoto-Ibafon samples）手工另存修复或弃
+    - [P2][OPEN][#5] Data_duplicates/ 确认后删除（13.8GB，去重移出的 127 个副本文件，含 _moved_mapping.txt 映射清单）
+    - [P2][OPEN][#6] .codex/sessions 会话日志膨胀根治（迁 D 盘或关持久化，目前靠手动清理）
+    - [P3][OPEN][#7] OKOTA C1 12 TP_24092025V6 COMPLTD.xlsx.skip 可永久删除
+    - [P0][CLOSED][#8] 将 `D:\Code\optical-power-toolkit` 安全迁移为独立 Git 仓库与 Worktree 根：保留项目历史、父仓库在 2026-07-10 `92dc13ad` 之后的 Phase 1-3 提交、当前未提交修改及大量未跟踪数据；迁移过程中禁止 checkout 覆盖工作树（Context：现有 `optical-power-toolkit-split` 分支与独立 GitHub 远端均停在 `92dc13ad`）——2026-07-28 完成，见 Done 首条
+    - [P1][OPEN][#9] 迁移后 push 远端——本地 main 11 条历史是 subtree 重写的、commit 哈希与远端旧基线对不上，push 须 `--force-with-lease` 覆盖远端 main（远端当前仅 1 条基线 commit，覆盖不丢真东西）（Context：origin = https://github.com/zylimit/optical-power-toolkit.git）
 
 ## In Progress
-    （无）
+    - （无）复核工程已 100% 收官，见 Done；剩余均为待办清理项，见 TODO
 
 ## Done（最近完成的放前面）
+    - 2026-07-28: [infra] Git 根迁移落地——将本项目从父级聚合仓库 `D:\Code` 拆为独立 Git 仓库，根=`D:\Code\optical-power-toolkit`。执行方案：父仓库 `git subtree split --prefix=optical-power-toolkit -b opt-split-fresh` 拆出含 Phase 1-3 全历史的独立分支（11 条 commit，路径重写使根=本项目内容）→ 本目录 `git init -b main` → `git fetch /d/Code opt-split-fresh` → `git reset --mixed FETCH_HEAD`（只动 HEAD+index、不碰工作树，满足 Pinned "禁止 checkout 覆盖工作树"约束）→ `git remote add origin https://github.com/zylimit/optical-power-toolkit.git`；临时分支 opt-split-fresh 用完已从父仓库删除。验收证据（主 Agent 当场亲自取得，非自报）：`git rev-parse --show-toplevel` → `D:/Code/optical-power-toolkit`（git 根已纠正）；`git log --oneline` → 11 条完整历史保留（phase-1→2→3 + V1.0 基线 92dc13a，commit 哈希因 subtree 路径重写而变、内容不变）；工作树未动——9 个 modified（scripts/pt_ocr.py、pt_batch.py、pt_extract.py、pt_recheck.py、tests/test_pt_recheck.py、tests/test_pt_recheck_units.py、progress.md、.claude/feedback/FEEDBACK-INDEX.md、.claude/evidence/gate-block.log）+ 35 个 untracked（data/Data_duplicates/logs/.codex 等）一个没丢（evidence：上述命令当场输出）
+    - 2026-07-14: 复核工程 100% 收官——全库剩余非 codex 硬样本 = 0；OCR失败全库仅剩 1 行（0.00%），对比 gemini 时代 1000+ 行失败。最终库态（332340 行）：无图 69.68% / 有图清晰 25.19% / 有图模糊 5.13%（codex 终审确认真糊）/ OCR失败 0.00%；box_check 通过 22.39% / 标牌糊未核对 6.04% / 后缀不符 1.89%（evidence：pt_data.sqlite 最终统计）
+    - 2026-07-14: 业务交付物已导出——reports/问题行明细.csv（30774 行）+ reports/问题文件汇总.csv（672 文件）
+    - 2026-07-14: 复核第八轮·终局（压缩模式）——Co-op City 268 行 + 嫌疑 945 行（OAuth 断权期误标）合计 1213 行/12 文件，26 分钟跑完，leg+971（80% 翻案成功）box+124；Co-op City .hold 已恢复原名并完成复核
+    - 2026-07-14: 嫌疑行翻案——945 行 OAuth 断权期被 codex 名下误判 OCR失败的行重置为 redo-suspect 重新入队复核（用户拍板"没把握的都重跑"）
+    - 2026-07-14: 复核第六轮（压缩模式）——20 文件/260 行，19.5 分钟跑完，leg+52 box+66
+    - 2026-07-14: 复核第五轮（全分辨率）——Mabushi 158 行 leg+44；因 VPN 窗口干扰用户叫停，Mushin 未入库、零污染
+    - 2026-07-14: pt_recheck 压缩模式改造——新增 --downscale 参数（默认 1024），测试 10/10 绿；实测识别率不降（压缩轮 box 救回率反超全分辨率轮）、速度提 4 倍（evidence：scripts/pt_recheck.py）
+    - 2026-07-14: OAuth 断权事故处置——recheck 第四轮期间 Codex CLI OAuth 过期，21 文件/327 行全部零抢救、242 行被误写"OCR失败"且 model 被标 codex（会被复核过滤条件漏掉）。已止损（杀进程）+ 修复：备份库 pt_data.backup_20260714.sqlite 后，把 327 行 model 重置为 'redo-auth-failed' 使其重新可复核（evidence：pt_data.backup_20260714.sqlite）
+    - 2026-07-14: 全盘对账完成——盘上 1426 xlsx；未入库仅 2 个（Akilo_C1_Z2.xlsx rId1崩溃、Alakoto-Ibafon samples）；.skip 隔离 1（OKOTA 垃圾文件）；.hold 暂扣 1（Co-op City 268 硬样本大文件）
+    - 2026-07-14: 重复文件去重执行完毕（用户拍板）——① 198 组跨目录同名文件全量 MD5 比对，197 组逐字节一致→每组保留原目录一份、删除 197 个副本（释放 11.5GB）；唯一内容不一致组 Dawaki_Extension 未动待裁定。② 116 组同尺寸改名副本 MD5 确认后，127 个副本移出 Data → Data_duplicates/（13.8GB，含 _moved_mapping.txt 映射清单）。③ 库内清除这 127 个文件名的 34927 行重复记录
+    - 2026-07-14: 去重后库瘦身——332340 行；待复核硬样本从 1611行/51文件 坍缩到 686行/22文件（此前一半"硬样本"是重复副本的水分，PZ 396 行、Owode 118 行两个"大块头"整个消失——本是副本）
+    - 2026-07-13: pt_batch.py 全量批处理跑完——1427/1427 文件扫描完毕（凌晨完成），本轮新入库 114 个文件 / 失败 2 个，库总规模 367267 行（evidence：batch_run.log）
+    - 2026-07-12: pt_recheck.py HARD_WHERE 加 model 过滤（AND (model IS NULL OR model NOT LIKE 'codex%')）：防重跑陷阱——重启时硬样本从虚胖的 19813 行/618 文件（含 batch 新入库的 codex 模糊行 + 上轮没救回的行，同模型重跑零收益）挤水到 1680 行/52 文件。测试 10/10 全绿（新增 codex 行排除用例）（evidence：scripts/pt_recheck.py, tests/test_pt_recheck.py, tests/test_pt_recheck_units.py）
+    - 2026-07-12: C 盘满事故处置——recheck 第一轮收尾 52 文件死于 C 盘 100% 满（安全回滚未脏库）。根因 .codex/sessions 单日 20GB 会话日志。已清理三轮共约 26GB，当前 C 盘 20G 空闲
+    - 2026-07-12: 两层超时防护上线并验证——① pt_extract.py 主防线：MAX_SHEET_ROWS=70000 常量 + _sheet_max_row() 廉价读 sheet XML 头 4KB 的 dimension，超 7 万行的 sheet 直接跳过不解析（病态样本实测 0.55s 返回，原 4 小时+）；CLI 加 --json 参数。② pt_batch.py 兜底：抽取阶段改子进程执行（主进程内函数调用挂死无法强杀），FILE_BUDGET=1800s 单文件总预算，抽取/OCR 超时触发 quarantine() 改名 .skip 永不再读；抽取子进程非零退出（如 rId1 崩溃）打日志跳过不中断。编译通过 + 病态样本/正常文件双冒烟通过，batch 已用新代码重启（1130/1427 checkpoint 恢复正常）（evidence：scripts/pt_extract.py, scripts/pt_batch.py）
+    - 2026-07-12: 病态 Excel 事故处置——OKOTA C1 12 TP_24092025V6 COMPLTD.xlsx 内 sheet dimension 被撑到 A1:AI1048576（104万行×35列），pt_extract 纯正则解析空转 4 小时零产出，拖死整条 pt_batch 串行流水；已把该文件改名 .skip 隔离（事后实测它 0 行有效数据）
+    - 2026-07-12: codex-gpt-5.6-terra 后端可靠性确认——15589 条记录 0.00% OCR 失败（对比 gemini-3.5-flash 0.61%、gemini-cli 4.34%），且在 pt_batch.py + pt_recheck.py 两任务并发压力下保持 0%（evidence：批处理/复核日志实时抽查）
+    - 2026-07-12: pt_recheck.py 已实跑：`--backend codex --workers 10`，硬样本 6433 行 / 253 文件，与 pt_batch.py 并发运行中，进度详见 In Progress（evidence：recheck_run.log）
+    - 2026-07-12: 修复 pt_recheck.py --dir 单目录 bug——改为 `nargs="+"` 支持多目录，process_file 依次在各目录下找文件；不修的话 253 个目标文件里大部分会被静默跳过（[缺文件]）。修完再次跑 `tests/test_pt_recheck.py` + `tests/test_pt_recheck_units.py` 9/9 通过
+    - 2026-07-12: 更新 tests/test_pt_recheck.py 和 tests/test_pt_recheck_units.py——mock 策略从 `patch.object(pt_recheck, "ocr_one")` 改为直接注入 `_fake_ocr_batch` 假批量函数（签名对齐 pt_ocr 批量后端），9/9 测试通过
+    - 2026-07-12: 修复 pt_recheck.py 的 ocr_one 失效导入——改为批量后端架构（ocr_batch/ocr_batch_codex 经 ocr_fn 参数注入 process_file），`py_compile` 通过
     - 2026-07-11: [V1.1 Phase 3] 四步走完成验证——全部通过，证据均为主 Agent 当场亲自取得：Code Review——Task 3.1（scripts/pt_ocr.py PROMPT v3）逐条核对，焦平面引导/逐字符辨认/禁止脑补三要素齐全（对应 pt_ocr.py 39-42 行）；Task 3.2（scripts/pt_recheck.py）逐条核对 fetch_hard/process_file/diff_stats/main 均匹配 DEV-PLAN 交付清单与命令行参数规格，复用 pt_extract/pt_ocr.ocr_one/pt_db.store 未复制逻辑；2 个 Low 级发现（pt_recheck.py:161 shutil.rmtree(ignore_errors=True) 静默吞清理失败、pt_recheck.py:70-75 ocr_targets 对库外新行的兜底 OCR）均评估为非阻塞 / 测试完整性——`pytest tests/ -q` 全量 50 passed；`test_pt_recheck_units.py` 单独 6 passed / 编译验证——`python -m py_compile` 覆盖 pt_recheck.py/pt_ocr.py/pt_db.py/pt_merge.py/pt_extract.py/pt_pipeline.py/pt_rules.py 全部零错误 / 功能测试——复用 Task 3.3 已有的真实数据单文件复核验证证据（model/ocr_at 精确分层、M2 两层防线未误触发、临时目录清理、legible 不劣化、L1 遗留验收缺口已闭环）。Phase 3 是 DEV-PLAN.md 最后一个 Phase，四步走全部通过，等待用户确认 Phase 完成（evidence：本次核验为本地运行取证，无新增 commit）
     - 2026-07-11: [V1.1 Phase 3][Task 3.3] pt_recheck.py 真实数据单文件复核验证——用 Data/onebox_power_test/ 目录下真实文件 `13A Obafemi Anibaba FAT EXTENSION HP PT NOV6.xlsx`（该目录共 362 个真实文件，本次只取 1 个做最小化验证，未做全量批处理，未重新下载任何数据）：在项目根目录新建 pt_data.sqlite，先用 `pt_batch.py --limit 1` 初始入库 34 条记录（model=gemini-3.5-flash），再用 `pt_recheck.py --limit 1` 复核。结果全部通过：硬样本识别 row 19/20/28 共 3 行→model=gemini-3.1-pro-preview + 新鲜 ocr_at，其余 31 行 model/ocr_at 完全未变，验证"只重跑硬样本、不动其他行"设计生效；M2 防护层（完整性检查）未触发 RuntimeError，34 行全部正常入库无缺行；legible(有图清晰) 计数复核前后均为 25，未降级；M2 检测层（worse 扫描）未报告任何 worse 项；临时目录清理正常（系统 temp 无 pt_recheck_* 残留）；此前遗留的 L1 发现（has_coord=是但 lat/lon 为空）复查为 0 行，闭环。至此 TODO #3（倾斜/异焦平面照片 OCR 增强）Task 3.1/3.2/3.3 全部完成，Task 3.1 遗留的"无样本照片单发对比 v2/v3"验收缺口已由 Task 3.3 真实照片验证间接闭环，本次未观察到整串标牌脑补现象（evidence：本地验证运行，pt_data.sqlite + pt_recheck.py --limit 1 输出，无代码变更故无新 commit）
     - 2026-07-11: [V1.1 Phase 3][Task 3.2] pt_recheck.py 硬样本复核流水 + M2 静默劣化两层防线——新增 scripts/pt_recheck.py（237行：硬样本行（有图模糊/OCR失败/标牌糊未核对）重抽照片、只对硬样本跑 pro 模型 OCR，非硬样本行从库内字段反查重建近似 json 补齐，整文件重建入库）+ tests/test_pt_recheck.py（186行，M2 缺陷三场景独立回归锁）；修改 scripts/pt_ocr.py（result_path 从 main() 内部闭包提升为模块级函数，供 pt_recheck.py 复用）。code-reviewer 三阶段审查全通过（Stage 0/1/2），0 High/Medium，1 Low（非阻塞可选项），审查中用变异测试验证了两层防线确实有效（分别对预防层校验条件和检测层 before 扫描范围做变异，回归测试均按预期变红）。全量回归 44 passed（evidence：commit ceef94e2）
@@ -56,6 +116,7 @@ _Last updated: 2026-07-11_
     - Risk：功率列偶尔混进日期序列号（Excel 日期如 45883）（Mitigation：合并时做 sanity 检查，超出 dBm 幅度 >60 视为无效退用照片值）
     - Assumption：FAT 命名合规率 98%、area 覆盖率 98.4%（Confidence：High，来自实测）
     - Assumption：照片信息可信度——功率读得 100%、坐标 85%、地址 60%（Confidence：Med，来自实测，作为真相优先级判定依据）
+    - Risk（2026-07-21）：当前 `git rev-parse --show-toplevel` 仍返回 `D:/Code`，项目目录没有 `.git`；父仓库包含大量其他项目且工作树高度 dirty，继续从父级创建/管理 worktree 会卷入无关项目，并可能混淆或覆盖本项目现有修改与未跟踪数据（Mitigation：执行 TODO #8 前只做只读盘点，迁移时保留历史与完整工作树，禁止 checkout 覆盖）
 
 ## Notes（简要要点）
     - 2026-07-10: 测试运行中发现 pt_merge.py:64 的 load_ocr() 有未关闭文件句柄的 ResourceWarning（open() 没用 with/上下文管理器）——属于 Phase 2 之前就存在的既有代码，本次未改动、非本 Phase 引入的回归，暂不处理，仅记录以备后续顺手清理
@@ -71,6 +132,17 @@ _Last updated: 2026-07-11_
     - 2026-07-11: Task 3.3 真实数据复核中，row 19/20/28 这 3 个硬样本经 pro 模型（gemini-3.1-pro-preview）复核后 photo_status 从"有图模糊"变成了"OCR失败"（未能升级为"有图清晰"），box_check 仍是"标牌糊未核对"——这是真实数据下 pro 模型对特定模糊照片确实无法提取结构化结果的真实结果，非代码缺陷。diff_stats() 的 worse 判定只覆盖"有图清晰→非清晰"和"通过→非通过"两类退化，"有图模糊→OCR失败"这种同属非清晰态之间的转换不在覆盖范围内（code-reviewer 审查 M2 时已作为 Low 级发现指出，属 Spec 边界内不算漏洞）。全量复核跑起来后，这类"复核未能改善"的行需要人工二次确认（如换角度重拍），不应自动判定为程序异常
     - 2026-07-11: scripts/pt_batch.py 存在 cwd 相关的相对路径问题——args.tmp 默认值 "pt_tmp" 按调用者 cwd 解析，但 OCR 子进程用 subprocess.run(cwd=HERE)（HERE 固定为 scripts/ 目录）启动，若从 scripts/ 之外目录（如项目根目录）调用会导致 --rows 相对路径解析基准错位、FileNotFoundError。当前规避方式：调用 pt_batch.py/pt_recheck.py 一律先 cd 进 scripts/ 目录，用 ../ 相对路径传 --db/--dir。属既有 V1.0 基础设施遗留问题，Task 3.2/3.3 范围外未修复，只是绕过；后续如需修，建议把 args.tmp 解析改为绝对路径锚定到 HERE 而非调用者 cwd
     - 2026-07-11: Phase 3 完成后全库 v3 复核的标准命令（须在 scripts/ 目录下执行，避免上述 cwd 路径问题）：`cd scripts && python pt_batch.py ../Data/onebox_power_test --db ../pt_data.sqlite --mode refresh && python pt_recheck.py --db ../pt_data.sqlite --dir ../Data/onebox_power_test`（若从项目根目录直接调用，--tmp 指向的临时目录会与 OCR 子进程 cwd 不一致而失败）
+    - 2026-07-12: 待 pt_recheck.py 跑完后，需做全库 OCR失败率 / main_issue 分布 before-after 对比，验证 GPT 重跑对历史 Gemini 失败样本的改善
+    - 2026-07-12: 遗留：Akilo_C1_Z2.xlsx 'rId1' 抽取 bug；跨目录同名文件"智能去重"（尚未安排到 TODO，先记录待排期）
+    - 2026-07-12: recheck_run.log 中 266 条"⚠ 变差待人工裁定"明细需人工过一遍
+    - 2026-07-12: 遗留：pt_batch.py 抽取子进程 stdout=DEVNULL，第一层防线的"超7万跳过"日志不会出现在 batch_run.log（可观测性小坑，暂不影响功能）
+    - 2026-07-12: rId1 崩溃（Akilo_C1_Z2.xlsx）仍未修，现由 pt_batch.py 抽取子进程非零退出分支兜住（跳过该文件），非真正修复——更新此前"待排期"记录
+    - 2026-07-12: 断网恢复后计划——先跑 batch 剩余 167 文件 → 再跑 recheck 51 文件 → 拥堵期误伤的"清晰→OCR失败"行统一补扫 → 出最终质量报告（gemini vs GPT 失败率 before/after + 问题行 CSV 清单）
+    - 2026-07-12: .codex/sessions 会话日志膨胀问题待根治（迁 D 盘或关持久化），目前靠手动清理
+    - 2026-07-13: 断网紧急停机清理完毕——进程全杀（0 python/0 codex 残留）、临时目录全清、当日 codex 会话日志已清（C 盘 17G 空闲）、定时巡检任务已删
+    - 2026-07-14: Dawaki_Extension - Urban Shelter_PT_12112025V4.xlsx 两目录版本内容不一致（16890KB vs 16887KB），去重时唯一跳过未处理，待人工裁定哪份为准
+    - 2026-07-14: Data_duplicates/ 存放去重移出的 127 个副本文件（13.8GB，含 _moved_mapping.txt 映射清单），确认无误后可整体删除腾出空间
+    - 2026-07-14: pt_recheck 加图片压缩（用户拍板方向，前提不影响识别率）：当前复核走全分辨率原图（downscale=0），单张比 batch 的 1024px 慢数倍。落地路径：recheck 第五轮跑完后做 A/B 实测——抽 30-50 张硬样本糊图，原图 vs 1024px（可加 1536px 档）各跑一遍 OCR，比对 legible/盒名/功率三字段一致率；糊图无退化 → pt_recheck 加 --downscale 参数（对齐 pt_batch，默认开压缩）+ 补测试；有退化 → 复核保持原图。旁证：batch 1024px 在清晰照片上 0.00% 失败
 
 ## Context Index（轻量索引）
     - Archive：./progress.archive.md（尚未创建）

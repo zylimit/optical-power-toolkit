@@ -29,7 +29,7 @@ for p in (SCRIPTS, _HERE):
 
 import pt_db        # noqa: E402
 import pt_recheck   # noqa: E402
-from test_pt_recheck import FNAME, _extracted_row, _fake_ocr_one  # noqa: E402
+from test_pt_recheck import FNAME, _extracted_row, _fake_ocr_batch  # noqa: E402
 
 
 def _mem_db():
@@ -70,6 +70,18 @@ class TestFetchHard(unittest.TestCase):
         by_file = pt_recheck.fetch_hard(self.conn, limit=1)
         self.assertEqual(sorted(by_file), ["a.xlsx"], "--limit 按文件名排序截取文件数")
         self.assertEqual(len(by_file["a.xlsx"]), 3, "limit 截的是文件数，不该丢文件内的硬样本行")
+
+    def test_codex_processed_rows_excluded(self):
+        """codex 处理过的模糊行没有复核价值（同模型重跑结果不变），不得再筛出；
+        gemini 处理的照常筛出；model 为 NULL（setUp 的旧数据）视作未被 codex 处理。"""
+        _insert(self.conn, source_file="c.xlsx", row=1,
+                photo_status="有图模糊", box_check="通过", model="codex-gpt-5.6-terra")
+        _insert(self.conn, source_file="c.xlsx", row=2,
+                photo_status="有图模糊", box_check="通过", model="gemini-3.5-flash")
+        by_file = pt_recheck.fetch_hard(self.conn)
+        self.assertEqual(by_file.get("c.xlsx"), {("Sheet1", 2)},
+                         "codex 行不得筛出，gemini 行照常筛出")
+        self.assertIn("a.xlsx", by_file, "model 为 NULL 的旧行必须照常筛出")
 
 
 class TestDiffStats(unittest.TestCase):
@@ -129,7 +141,7 @@ class TestTempDirCleanup(unittest.TestCase):
         self.addCleanup(self.tmpdir.cleanup)
         with open(os.path.join(self.tmpdir.name, FNAME), "wb") as f:
             f.write(b"dummy")
-        self.args = SimpleNamespace(dir=self.tmpdir.name, model="gemini-test", workers=1)
+        self.args = SimpleNamespace(dir=[self.tmpdir.name], model="gemini-test", workers=1, backend="fake", downscale=0)
 
     def _run(self, extra_patches=()):
         """跑真实 process_file，捕获它建的临时目录路径（挂 self.created，
@@ -144,14 +156,13 @@ class TestTempDirCleanup(unittest.TestCase):
 
         ctx = [patch.object(pt_recheck.tempfile, "mkdtemp", side_effect=spy_mkdtemp),
                patch.object(pt_recheck, "extract_file",
-                            return_value=[_extracted_row(1), _extracted_row(2)]),
-               patch.object(pt_recheck, "ocr_one", side_effect=_fake_ocr_one)]
+                            return_value=[_extracted_row(1), _extracted_row(2)])]
         ctx.extend(extra_patches)
         try:
             for c in ctx:
                 c.start()
             result = pt_recheck.process_file(
-                self.conn, FNAME, {("Sheet1", 1)}, self.args, "fake-key")
+                self.conn, FNAME, {("Sheet1", 1)}, self.args, "fake-backend", _fake_ocr_batch)
         finally:
             for c in ctx:
                 c.stop()

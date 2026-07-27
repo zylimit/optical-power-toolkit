@@ -31,6 +31,16 @@ if hasattr(sys.stdout, "reconfigure"):
 BOX_RE = re.compile(r"H\d+L\d+S\d+", re.I)
 PASS_RE = re.compile(r"^(pass|fail)$", re.I)
 POWER_KW = ("power", "ddm", "testing", "testimg", "test picture", "meter")
+MAX_SHEET_ROWS = 70000  # 正常光功率表最多几千行，dimension 超 7 万 = 病态垃圾 range，不解析
+
+
+def _sheet_max_row(z, sheet_path):
+    """廉价读 sheet XML 头部 <dimension ref="A1:AI1048576"/> 的最大行号。
+    只流式读前 4096 字节，找不到 dimension 标签返回 None（退化为正常解析）。"""
+    with z.open(sheet_path) as f:
+        head = f.read(4096).decode("utf-8", "replace")
+    m = re.search(r'<dimension ref="[^"]*?(\d+)"', head)
+    return int(m.group(1)) if m else None
 
 
 def _shared_strings(z):
@@ -212,6 +222,10 @@ def extract_file(xlsx, out_dir, scan=False, log=print):
     log(f"文件: {src}")
     records = []
     for name, path in _sheet_map(z):
+        max_row = _sheet_max_row(z, path)
+        if max_row and max_row > MAX_SHEET_ROWS:
+            log(f"  跳过 [{name}]  行数上限{max_row}超7万，疑似垃圾range -> 不解析")
+            continue
         is_power, box_ct, has_img, cells = classify_sheet(z, path, ss)
         if not is_power:
             log(f"  跳过 [{name}]  盒子ID={box_ct} 图={has_img}  -> 非光功率")
@@ -231,6 +245,7 @@ def main(argv=None):
     ap.add_argument("xlsx", nargs="+")
     ap.add_argument("--out", default="pt_run1")
     ap.add_argument("--scan", action="store_true", help="只分类各 sheet，不抽取")
+    ap.add_argument("--json", default=None, help="额外把抽取记录 dump 到指定 json 路径")
     args = ap.parse_args(argv)
 
     all_records = []
@@ -242,6 +257,9 @@ def main(argv=None):
         with open(os.path.join(args.out, "rows.json"), "w", encoding="utf-8") as f:
             json.dump(all_records, f, ensure_ascii=False, indent=1)
         print(f"共 {len(all_records)} 行 -> {os.path.join(args.out, 'rows.json')}")
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(all_records, f, ensure_ascii=False, indent=1)
 
 
 if __name__ == "__main__":

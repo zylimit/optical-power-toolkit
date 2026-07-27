@@ -18,7 +18,9 @@
 
 fixture 全部库内造（sqlite3 内存库 + pt_db.SCHEMA），不碰真实库、不发网络请求：
 - extract_file mock 掉（不解析真 xlsx，返回手工构造的两行 extracted 记录）
-- ocr_one mock 掉（不调 Gemini，硬样本 row=1 返回构造好的清晰 OCR 结果）
+- ocr_fn 直接传假批量函数（不调真 CLI，硬样本 row=1 返回构造好的清晰 OCR 结果；
+  process_file 现在按 pt_ocr 的批量后端签名 (items, backend_handle, retries, downscale)
+  调用 ocr_fn，backend_handle 在测试里只是个占位哨兵，不真的连 CLI）
 运行：python -m pytest tests/test_pt_recheck.py -v
 """
 
@@ -54,16 +56,20 @@ def _extracted_row(row):
             "image": f"fake_img_row{row}.jpg", "has_photo": True}
 
 
-def _fake_ocr_one(item, api_key, model, retries=5, downscale=0):
-    """mock pt_ocr.ocr_one：硬样本 row=1 返回清晰可读、标牌与表格一致的 OCR 结果
-    （结构对齐 pt_ocr.py:96-104）。row=2 非硬样本不该被 OCR，误调直接报错。"""
-    if item["row"] != 1:
-        raise AssertionError(f"非硬样本 row={item['row']} 不应真跑 OCR")
-    return {"source_file": FNAME, "row": 1, "sheet": "Sheet1",
-            "box_name_image": BOX, "power_dbm": -20.5,
-            "lat": 6.44, "lon": 3.31, "address": "5 Marina Road, Lagos",
-            "addr_area": "Ajah", "addr_estate": "", "addr_street": "Marina Road",
-            "near_street": False, "timestamp": "2026-07-02", "legible": True, "notes": ""}
+def _fake_ocr_batch(items, backend_handle, retries=5, downscale=0):
+    """mock ocr_fn（pt_ocr.ocr_batch/ocr_batch_codex 的批量签名）：硬样本 row=1
+    返回清晰可读、标牌与表格一致的 OCR 结果（结构对齐 pt_ocr.py:96-104）。
+    row=2 非硬样本不该混进这批，误传直接报错。"""
+    out = []
+    for item in items:
+        if item["row"] != 1:
+            raise AssertionError(f"非硬样本 row={item['row']} 不应真跑 OCR")
+        out.append({"source_file": FNAME, "row": 1, "sheet": "Sheet1",
+                     "box_name_image": BOX, "power_dbm": -20.5,
+                     "lat": 6.44, "lon": 3.31, "address": "5 Marina Road, Lagos",
+                     "addr_area": "Ajah", "addr_estate": "", "addr_street": "Marina Road",
+                     "near_street": False, "timestamp": "2026-07-02", "legible": True, "notes": ""})
+    return out
 
 
 class TestNonHardRowSilentLoss(unittest.TestCase):
@@ -89,7 +95,7 @@ class TestNonHardRowSilentLoss(unittest.TestCase):
         self.addCleanup(self.tmpdir.cleanup)
         with open(os.path.join(self.tmpdir.name, FNAME), "wb") as f:
             f.write(b"dummy")
-        self.args = SimpleNamespace(dir=self.tmpdir.name, model="gemini-test", workers=1)
+        self.args = SimpleNamespace(dir=[self.tmpdir.name], model="gemini-test", workers=1, backend="fake", downscale=0)
 
     def tearDown(self):
         self.conn.close()
@@ -122,10 +128,10 @@ class TestNonHardRowSilentLoss(unittest.TestCase):
         hard_keys = {("Sheet1", 1)}
         extracted = [_extracted_row(1), _extracted_row(2)]
         with patch.object(pt_recheck, "extract_file", return_value=extracted), \
-             patch.object(pt_recheck, "ocr_one", side_effect=_fake_ocr_one), \
              patch.object(pt_recheck, "result_path", side_effect=wrapped_result_path), \
              patch.object(pt_recheck, "rebuild_json", side_effect=wrapped_rebuild_json):
-            res = pt_recheck.process_file(self.conn, FNAME, hard_keys, self.args, "fake-key")
+            res = pt_recheck.process_file(self.conn, FNAME, hard_keys, self.args,
+                                           "fake-backend", _fake_ocr_batch)
         self.assertIsNotNone(res, "process_file 不应跳过该文件")
         return res  # before 快照（该文件复核前全部行）
 

@@ -24,13 +24,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pt_extract import extract_file
 from pt_merge import load_ocr
-from pt_ocr import ocr_one, result_path
+from pt_ocr import result_path, BATCH_SIZE, CODEX_MODEL, ocr_batch, ocr_batch_codex, _gemini_cmd, _codex_cmd
 import pt_db
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HARD_WHERE = "photo_status IN ('有图模糊','OCR失败') OR box_check='标牌糊未核对'"
+HARD_WHERE = ("(photo_status IN ('有图模糊','OCR失败') OR box_check='标牌糊未核对') "
+              "AND (model IS NULL OR model NOT LIKE 'codex%')")
 
 
 def fetch_hard(conn, limit=None):
@@ -75,14 +76,14 @@ def ocr_targets(extracted, db_keys, hard_keys):
                  or (r.get("sheet"), r["row"]) not in db_keys)]
 
 
-def process_file(conn, fname, hard_keys, args, api_key):
+def process_file(conn, fname, hard_keys, args, backend_handle, ocr_fn):
     """单文件复核。返回 before 快照 {(sheet,row): (photo_status, box_check)}，
     覆盖该文件复核前库内**全部行**（非仅硬样本，供 diff_stats 全量检测劣化/消失）；
     跳过返回 None。store 之前先做 OCR json 完整性校验，缺行即抛 RuntimeError 中止
     （由 main 的循环兜底：回滚、打印、跳过该文件），保证 store 绝不在已知有缺口时执行。"""
-    xlsx = os.path.join(args.dir, fname)
-    if not os.path.isfile(xlsx):
-        print(f"[缺文件] {fname}: 在 {args.dir} 下找不到，跳过")
+    xlsx = next((p for p in (os.path.join(d, fname) for d in args.dir) if os.path.isfile(p)), None)
+    if xlsx is None:
+        print(f"[缺文件] {fname}: 在 {args.dir} 下都找不到，跳过")
         return None
     xlsx_size = os.path.getsize(xlsx)  # 提前取：store 提交之后再抛 IO 异常就撤不掉了
     db_rows = fetch_file_rows(conn, fname)
@@ -100,15 +101,20 @@ def process_file(conn, fname, hard_keys, args, api_key):
         ocr_dir = os.path.join(tmp, "ocr")
         os.makedirs(ocr_dir, exist_ok=True)
 
-        # ② 只对硬样本行跑 pro OCR（result_path 命名规则直接复用 pt_ocr 的）
+        # ② 只对硬样本行跑复核 OCR（result_path 命名规则直接复用 pt_ocr 的），
+        #    按 BATCH_SIZE 分批走 pt_ocr 的批量后端函数（ocr_batch/ocr_batch_codex
+        #    签名一致：(items, backend_handle, retries, downscale)），批次间用线程池并发。
         targets = ocr_targets(extracted, db_keys, hard_keys)
-        print(f"[复核] {fname}: 硬样本 {len(hard_keys)} 行，OCR {len(targets)} 张，模型 {args.model}")
+        print(f"[复核] {fname}: 硬样本 {len(hard_keys)} 行，OCR {len(targets)} 张，后端 {args.backend}")
+        chunks = [targets[i:i + BATCH_SIZE] for i in range(0, len(targets), BATCH_SIZE)]
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futs = {ex.submit(ocr_one, r, api_key, args.model): r for r in targets}
+            futs = {ex.submit(ocr_fn, c, backend_handle, 5, args.downscale): c for c in chunks}
             for fut in as_completed(futs):
-                r = futs[fut]
-                with open(result_path(ocr_dir, r), "w", encoding="utf-8") as f:
-                    json.dump(fut.result(), f, ensure_ascii=False)
+                chunk = futs[fut]
+                batch = fut.result()
+                for it, res in zip(chunk, batch):
+                    with open(result_path(ocr_dir, it), "w", encoding="utf-8") as f:
+                        json.dump(res, f, ensure_ascii=False)
 
         # ③ 补齐非硬样本行的 OCR json——store(refresh) 按 OCR 目录整体重建，缺谁丢谁。
         #    photo_status=无图 的行原本就没有 OCR json，跳过（reconcile 走无图分支）。
@@ -188,16 +194,33 @@ def diff_stats(conn, fname, before, hard_keys):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="pt_data.sqlite")
-    ap.add_argument("--dir", required=True, help="xlsx 下载目录（按 source_file 定位原文件重抽照片）")
-    ap.add_argument("--model", default="gemini-3.1-pro-preview")
+    ap.add_argument("--dir", nargs="+", required=True,
+                     help="xlsx 下载目录（可传多个，覆盖范围与 pt_batch.py 一致；"
+                          "按 source_file 依次在各目录下定位原文件重抽照片）")
+    ap.add_argument("--backend", choices=["gemini", "codex"], default="codex",
+                     help="复核用的 OCR 后端（默认 codex/GPT-5.6-terra 订阅路线；"
+                          "gemini 为旧路线，本轮 1028 条硬样本失败全部出自该路线，不建议再用）")
+    ap.add_argument("--model", default=None, help="写库的 model 标签，默认按 --backend 自动取")
     ap.add_argument("--limit", type=int, default=None, help="最多处理几个命中文件")
-    ap.add_argument("--workers", type=int, default=4, help="OCR 并发（pro 模型限速紧，默认保守）")
+    ap.add_argument("--workers", type=int, default=8, help="并发批次数（codex/gemini CLI 子进程并发数）")
+    ap.add_argument("--downscale", type=int, default=1024,
+                     help="OCR 前图片长边压缩像素，0=不压缩（对齐 pt_batch 默认 1024）")
     args = ap.parse_args(argv)
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("缺 GEMINI_API_KEY")
-        return 2
+    if args.backend == "codex":
+        backend_handle = _codex_cmd()
+        if not backend_handle:
+            print("PATH 上找不到 codex CLI（npm i -g @openai/codex 并完成 codex login 登录）")
+            return 2
+        ocr_fn = ocr_batch_codex
+        args.model = args.model or f"codex-{CODEX_MODEL}"
+    else:
+        backend_handle = _gemini_cmd()
+        if not backend_handle:
+            print("PATH 上找不到 gemini CLI（npm i -g @google/gemini-cli 并完成 OAuth 登录）")
+            return 2
+        ocr_fn = ocr_batch
+        args.model = args.model or "gemini-cli-recheck"
 
     conn = pt_db.connect(args.db)
     by_file = fetch_hard(conn, args.limit)
@@ -208,7 +231,7 @@ def main(argv=None):
     tot = {"files": 0, "rows": 0, "leg": 0, "box": 0}
     for fname, hard_keys in by_file.items():
         try:
-            res = process_file(conn, fname, hard_keys, args, api_key)
+            res = process_file(conn, fname, hard_keys, args, backend_handle, ocr_fn)
         except Exception as e:
             # 能抛到这里的只剩 store() 提交之前的异常（重抽/OCR/store 中途）——store 之后的
             # 溯源还原异常已在 process_file 内兜住告警不再上抛，所以"保持原样"是真的
