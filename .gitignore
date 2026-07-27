@@ -15,3 +15,7 @@ Data_duplicates/
 scripts/pt_ocr_tmp_*/
 .codex/
 .claude/scheduled_tasks.lock
+.agents/
+.vscode/
+AGENTS.md
+audit*.txt
