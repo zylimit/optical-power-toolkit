@@ -9,7 +9,11 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from fastapi import FastAPI
 
+from server.routes_upload import router as upload_router
+
 app = FastAPI(title="Optical Power Toolkit API", version="2.0")
+
+app.include_router(upload_router)
 
 
 @app.get("/health")

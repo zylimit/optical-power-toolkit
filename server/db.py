@@ -105,3 +105,101 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.executescript(DERIVED_INDEX)
     conn.commit()
     return conn
+
+
+# records 可写列白名单（全列 + image_path，不含自增主键 id）。
+# 上传入库时仅取 record dict 中命中此白名单的键，未知键静默忽略（防客户端脏字段污染 SQL）。
+WRITABLE_REC_COLS: List[str] = REC_COLS + ["image_path"]
+
+# files 表可写列（record_count 由服务端统计，processed_at 服务端打时间戳）。
+FILES_COLS: List[str] = [
+    "file_name", "file_size", "sheets", "rows", "photos",
+    "record_count", "model", "processed_at", "content_md5", "duplicate_of",
+]
+
+
+def upsert_record(conn: sqlite3.Connection, source_file: str, record: dict) -> None:
+    """按唯一键 (source_file, sheet, row) upsert 一条 records。
+
+    record 为客户端提交的字段字典，仅取命中 WRITABLE_REC_COLS 的键（未知键忽略）。
+    source_file 以路径参数为准，覆盖 record 里可能带的同名字段。
+    冲突（同 source_file+sheet+row 已存在）时按新值更新全部写入列（幂等覆盖）。
+    SQL 参数化，不拼接。
+    """
+    data = {k: record[k] for k in WRITABLE_REC_COLS if k in record}
+    data["source_file"] = source_file  # 路径参数权威
+
+    cols = list(data.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    col_list = ", ".join(cols)
+    # 冲突列（唯一键）不参与 SET，其余列全部覆盖
+    conflict_keys = {"source_file", "sheet", "row"}
+    updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c not in conflict_keys)
+
+    sql = (
+        f"INSERT INTO records ({col_list}) VALUES ({placeholders}) "
+        f"ON CONFLICT(source_file, sheet, row) DO UPDATE SET {updates}"
+    )
+    conn.execute(sql, [data[c] for c in cols])
+
+
+def get_file_by_md5_size(
+    conn: sqlite3.Connection, content_md5: str, file_size: int
+) -> str | None:
+    """查 files 表有无同 content_md5+file_size 的文件，返回其 file_name（source_file），无则 None。
+
+    只取非重复项（duplicate_of IS NULL）作复用源，避免链式指向重复项。
+    """
+    row = conn.execute(
+        "SELECT file_name FROM files WHERE content_md5=? AND file_size=? "
+        "AND duplicate_of IS NULL ORDER BY processed_at LIMIT 1",
+        (content_md5, file_size),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def upsert_file(conn: sqlite3.Connection, file_row: dict) -> None:
+    """按主键 file_name upsert 一条 files。仅取 FILES_COLS 命中键，SQL 参数化。"""
+    data = {k: file_row[k] for k in FILES_COLS if k in file_row}
+    cols = list(data.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    col_list = ", ".join(cols)
+    updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "file_name")
+    sql = (
+        f"INSERT INTO files ({col_list}) VALUES ({placeholders}) "
+        f"ON CONFLICT(file_name) DO UPDATE SET {updates}"
+    )
+    conn.execute(sql, [data[c] for c in cols])
+
+
+def list_files(conn: sqlite3.Connection, since: str | None = None) -> List[dict]:
+    """返回文件清单 [{source_file, content_md5, file_size, record_count, duplicate_of, ocr_at}]。
+
+    ocr_at 取该文件 records 里最新 ocr_at，缺则回退 files.processed_at。
+    since 非空时过滤 processed_at > since（字符串比较；ISO / unix-ts 串按字典序，
+    调用方保证格式一致即可）。
+    """
+    sql = (
+        "SELECT f.file_name, f.content_md5, f.file_size, f.record_count, "
+        "f.duplicate_of, "
+        "COALESCE((SELECT MAX(r.ocr_at) FROM records r WHERE r.source_file=f.file_name), "
+        "f.processed_at) AS ocr_at "
+        "FROM files f"
+    )
+    params: list = []
+    if since:
+        sql += " WHERE f.processed_at > ?"
+        params.append(since)
+    sql += " ORDER BY f.processed_at"
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "source_file": r[0],
+            "content_md5": r[1],
+            "file_size": r[2],
+            "record_count": r[3],
+            "duplicate_of": r[4],
+            "ocr_at": r[5],
+        }
+        for r in rows
+    ]

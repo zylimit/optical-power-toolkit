@@ -20,3 +20,5 @@ scripts/pt_ocr_tmp_*/
 AGENTS.md
 audit*.txt
 server/images/
+server/*.db
+server/*.db-*
