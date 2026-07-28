@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import sys
+from urllib.parse import quote
 
 import requests
 
@@ -34,7 +35,8 @@ UPLOAD_TIMEOUT = 300
 
 def content_md5(path):
     """对整个 xlsx 文件算 md5，返回 32 位小写十六进制（服务端白名单格式）。"""
-    return hashlib.md5(open(path, "rb").read()).hexdigest()
+    with open(path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
 
 
 def build_upload_records(rows_json, ocr_dir, model):
@@ -116,7 +118,7 @@ class ServerClient:
                 files.append(("images", (os.path.basename(img), fh, "image/jpeg")))
             try:
                 r = requests.post(
-                    f"{self.base}/files/{source_file}/records",
+                    f"{self.base}/files/{quote(source_file, safe='')}/records",
                     data=data, files=files or None, timeout=UPLOAD_TIMEOUT)
             finally:
                 for fh in opened:

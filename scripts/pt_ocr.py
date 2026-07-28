@@ -387,7 +387,10 @@ def ocr_batch_tokenplan(items, retries=5, downscale=0):
     thinking 块只取 text 块（_anthropic_text_block）。退避沿用通用短退避
     （同 gemini/codex 节奏），不做 claude 那种 429 长退避——订阅不限流那么紧。"""
     import requests
-    url = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/") or TOKENPLAN_URL
+    # token-plan 后端直连 token-plan 网关，不读 ANTHROPIC_BASE_URL（那是 mango/litellm
+    # 网关基址，给 --backend claude 用，误读会让 tokenplan 请求发往 mango）。
+    # 单独读 TOKENPLAN_BASE_URL 作可选覆写点；无该变量时用 TOKENPLAN_URL。
+    url = os.environ.get("TOKENPLAN_BASE_URL", "").rstrip("/") or TOKENPLAN_URL
     if not url.endswith("/v1/messages"):
         # 若用环境变量给的是基址（不含路径），补上标准 Messages 路径
         url = url.rstrip("/") + "/v1/messages" if not url.endswith("/messages") else url

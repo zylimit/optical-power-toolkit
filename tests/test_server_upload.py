@@ -156,3 +156,74 @@ class TestListFiles:
         # since 取远古时间 → 全部满足
         got = client.get("/files", params={"since": "1970-01-01T00:00:00"}).json()
         assert len(got) == 1
+
+
+# --------------------------------------------------------------------------
+# red-locks：已确认缺陷的失败测试（锁红，待 implementer 修绿）
+# --------------------------------------------------------------------------
+
+class TestRedlockRecordCountMultiBatch:
+    """缺陷1：record_count 多批上传只记最后一批数。
+
+    Spec 契约：GET /files 的 record_count 应为该文件的总记录数。
+    客户端 pt_upload 按 BATCH_SIZE=50 分批 POST，>50 行文件会分多批。
+    现状：upsert_file 每批把 record_count 覆盖为本批 records_stored，
+    导致 GET /files 返回最后一批数而非总数。红测试锁该缺陷。
+    """
+
+    def test_record_count_after_multibatch(self, client):
+        # 60 条记录，每批 30 条（BATCH_SIZE 实际是 50，这里用 30 拆 2 批以减少构造量；
+        # 关键是「分多批」这一行为本身）
+        batch1 = _recs() + [_recs(row=2), _recs(row=3)]  # 3 条不够，构造 30 条
+        rows_batch1 = [{"sheet": "Sheet1", "row": i, "box_name": "H1L1S1",
+                        "power_dbm": 20.0, "photo_status": "无图", "conf": "高"}
+                       for i in range(1, 31)]
+        rows_batch2 = [{"sheet": "Sheet1", "row": i, "box_name": "H1L1S1",
+                        "power_dbm": 20.0, "photo_status": "无图", "conf": "高"}
+                       for i in range(31, 61)]
+        # 同 source_file + 同 content_md5 + 同 file_size → 第二批走同 source_file 幂等覆盖分支
+        r1 = _post(client, "big.xlsx", MD5_A, 600, rows_batch1)
+        assert r1.status_code == 200
+        r2 = _post(client, "big.xlsx", MD5_A, 600, rows_batch2)
+        assert r2.status_code == 200
+        files = client.get("/files").json()
+        big = [f for f in files if f["source_file"] == "big.xlsx"]
+        assert len(big) == 1
+        # 期望 60（文件总记录数），现状为 30（最后一批数）→ 红
+        assert big[0]["record_count"] == 60, (
+            f"record_count 多批上传应=文件总记录数 60，实际={big[0]['record_count']}"
+            "（缺陷1：upsert_file 每批覆盖 record_count 为本批数）"
+        )
+
+
+class TestRedlockOldImageDeletedOnMd5Change:
+    """缺陷2：content_md5 变更覆盖旧图悬空。
+
+    DEV-PLAN 契约：「无悬空旧图」——同 source_file 重传且内容变（md5 变）时，
+    旧 md5 目录下的图应删除，新图落新 md5 目录。现状：旧图残留。
+    """
+
+    def test_old_image_deleted_on_md5_change(self, client, tmp_path):
+        from server import imagestore as _img
+        # 第一次：fileA md5=aaa + 1 图（sheet=Sheet1, row=1）
+        img1 = ("images", ("a.jpg", b"\xff\xd8jpeg-A", "image/jpeg"))
+        extra1 = {"image_sheets": "Sheet1", "image_rows": "1"}
+        r1 = _post(client, "fileA.xlsx", MD5_A, 100, _recs(),
+                   files=[img1], extra=extra1)
+        assert r1.status_code == 200
+        old_dir = _img.IMAGES_DIR / MD5_A
+        assert old_dir.exists(), "前置：旧 md5 图目录应存在"
+        # 第二次：同 source_file，md5 变为 bbb（内容变）+ 1 图（同 sheet/row）
+        img2 = ("images", ("a.jpg", b"\xff\xd8jpeg-B", "image/jpeg"))
+        extra2 = {"image_sheets": "Sheet1", "image_rows": "1"}
+        r2 = _post(client, "fileA.xlsx", MD5_B, 100, _recs(),
+                   files=[img2], extra=extra2)
+        assert r2.status_code == 200
+        # 断言：旧 md5 目录应已被删除（无悬空旧图），现状残留 → 红
+        assert not old_dir.exists(), (
+            f"旧 md5 目录 {old_dir} 应在重传 md5 变更后删除（无悬空旧图），"
+            f"实际仍存在（缺陷2：md5 变更未清理旧图）"
+        )
+        # 新 md5 目录应有图
+        new_dir = _img.IMAGES_DIR / MD5_B
+        assert new_dir.exists(), "新 md5 图目录应存在"

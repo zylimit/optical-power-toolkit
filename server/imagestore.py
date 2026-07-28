@@ -91,3 +91,20 @@ def delete_image(content_md5: str, sheet: str, row: int) -> bool:
         if md5_dir.exists() and not any(md5_dir.iterdir()):
             md5_dir.rmdir()
     return True
+
+
+def delete_md5_dir(content_md5: str) -> bool:
+    """删整个 content_md5 目录（同 source_file 重传 md5 变更时清旧图，防悬空）。
+
+    路径逃逸校验同 _build_path（content_md5 作目录名前必校验）。
+    目录不存在返回 False，存在并删除返回 True。调用方须保证旧 md5 目录不再被
+    任何 files 表记录引用（见 db.count_other_files_with_md5），否则会误删复用图。
+    """
+    if not content_md5 or _TRAVERSAL_RE.search(content_md5):
+        raise ValueError(f"非法 content_md5: {content_md5!r}")
+    import shutil
+    md5_dir = IMAGES_DIR / content_md5
+    if not md5_dir.exists():
+        return False
+    shutil.rmtree(md5_dir)
+    return True

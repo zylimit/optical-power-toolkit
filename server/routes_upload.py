@@ -30,7 +30,9 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile
 from server import imagestore
 from server.db import (
     connect,
+    count_other_files_with_md5,
     get_file_by_md5_size,
+    get_file_content_md5,
     list_files,
     upsert_file,
     upsert_record,
@@ -135,7 +137,14 @@ async def upload_records(
             if sheet is not None:
                 sheet_set.add(sheet)
 
-        # ⑦ files 表 upsert（record_count 统计本批，processed_at 服务端时间戳）
+        # ⑥.5 md5 变更重传：记旧 md5（upsert_file 覆盖前查），upsert 后判能否删旧图目录
+        old_md5 = get_file_content_md5(conn, source_file)
+
+        # ⑦ files 表 upsert（record_count 取 records 表真实计数，不再用本批数）
+        # 多批上传时本批 records_stored 只是增量，files.record_count 必须反映文件总记录数。
+        total_records = conn.execute(
+            "SELECT COUNT(*) FROM records WHERE source_file=?", (source_file,)
+        ).fetchone()[0]
         upsert_file(
             conn,
             {
@@ -144,13 +153,18 @@ async def upload_records(
                 "sheets": len(sheet_set),
                 "rows": records_stored,
                 "photos": len(image_paths),
-                "record_count": records_stored,
+                "record_count": total_records,
                 "model": model,
                 "processed_at": _now_iso(),
                 "content_md5": content_md5,
                 "duplicate_of": duplicate_of,
             },
         )
+
+        # ⑦.5 md5 变更且旧 md5 无其它文件引用（含 duplicate）→ 删旧 md5 图目录，防悬空
+        if old_md5 and old_md5 != content_md5:
+            if count_other_files_with_md5(conn, old_md5, source_file) == 0:
+                imagestore.delete_md5_dir(old_md5)
 
         conn.commit()  # 事务：全部成功才落盘，中途抛错回滚
     except HTTPException:

@@ -172,6 +172,29 @@ def upsert_file(conn: sqlite3.Connection, file_row: dict) -> None:
     conn.execute(sql, [data[c] for c in cols])
 
 
+def get_file_content_md5(conn: sqlite3.Connection, source_file: str) -> str | None:
+    """查 files 表某 source_file 当前 content_md5（md5 变更清理旧图用），无则 None。"""
+    row = conn.execute(
+        "SELECT content_md5 FROM files WHERE file_name=?", (source_file,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def count_other_files_with_md5(
+    conn: sqlite3.Connection, content_md5: str, exclude_file: str
+) -> int:
+    """查 files 表里除 exclude_file 外、content_md5 等于给定值的记录数。
+
+    md5 变更重传时判断旧 md5 图目录是否还被别的（含 duplicate）文件引用：
+    duplicate 文件 content_md5 与原件相同，故一并计入。>0 则不能删旧图目录。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM files WHERE content_md5=? AND file_name!=?",
+        (content_md5, exclude_file),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def list_files(conn: sqlite3.Connection, since: str | None = None) -> List[dict]:
     """返回文件清单 [{source_file, content_md5, file_size, record_count, duplicate_of, ocr_at}]。
 
