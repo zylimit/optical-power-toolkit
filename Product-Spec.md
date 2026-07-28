@@ -7,6 +7,7 @@
 > **状态分期**：
 > - **V1.0（已建成）**：xlsx 抽取（表+锚定照片）、Gemini 视觉 OCR、表图交叉校验、FAT 命名规则引擎、功率合格判定、SQLite 入库（增量/覆盖/询问三模式）、派生指标（层级/复测清单）、CSV 导出。
 > - **V1.1（待做）**：盒子级去重报表（管理者复测清单）、地址结构化（Area/Estate/Street + Off 规则）、倾斜/异焦平面照片 OCR 增强。
+> - **V2.0（服务化·本迭代）**：客户端 CLI 上传 + 服务端存储/查询 API——把 V1 本地处理管线改造成 C/S：客户端复用 pt_batch.py 全流程（下载→抽取→OCR→校验），把"落本地 SQLite"换成"上传服务端"；服务端从零写，存图(磁盘)+存数据(DB)+提供 REST API 供 digifiber-conflation 批量拉光功率记录与原图。详见末章「V2.0 服务化」。
 > - **V2（北极星）**：与 digifiber-conflation 打通——用光功率坐标修 NCE 的 GPS 漂移、按 FAT 名和设计库对覆盖率。
 
 ## 产品概述
@@ -28,7 +29,7 @@
 **V1 明确不做**：
 - KMZ 设计侧处理（kmz_toolkit / digifiber-conflation 负责）
 - Web UI（V1 纯命令行/批处理）
-- 图片入库（**信息安全硬约束：图片绝不进库**）
+- 图片入库（~~信息安全硬约束：图片绝不进库~~ → **V2.0 修订**：内网闭环、不外传前提下，服务端可存原图，详见末章「V2.0 服务化·约束修订」）
 
 ## 产品定位与路线图
 
@@ -172,3 +173,115 @@
 | 功率阈值 | -25 < v ≤ -10 合格 | 客观判定，不信人填 Pass |
 | OCR 模型 | gemini-3.5-flash（直连，VPN 关） | 硬样本可上 gemini-3.1-pro 复核 |
 | 环境变量 | GEMINI_API_KEY | Google 直连 key |
+
+---
+
+## V2.0 服务化
+
+> 本迭代把 V1 本地处理管线改造成 C/S：客户端 CLI 复用现有全流程、把落库换成上传；服务端从零写，存图+存数据+查询 API。
+
+### 架构（已定稿·方案A 客户端全栈）
+
+```
+客户端 CLI（手动触发，改造 pt_batch.py）:
+  1. 开内网VPN → 下载 xlsx (onebox_downloader)        ← 复用
+  2. 抽取 行+照片 (pt_extract)                          ← 复用
+  3. 关VPN → OCR 照片 (pt_ocr, Gemini/Codex CLI)        ← 复用
+  4. 规则校验+合并 (pt_merge/pt_rules)                  ← 复用
+  5. 开内网VPN → 上传 结构化数据+原图 回服务端           ← 新增：pt_db 落库换成上传
+服务端（V1 本机测试 → 生产上内网服务器）:
+  接收上传 → 存图(磁盘) + 存数据(DB) + 查询API(数据+图)   ← 全新写
+```
+
+### 关键决策（记入 progress.md Decisions）
+
+- **下载留客户端，放弃服务端自动下载**：权衡过 4 个架构方案（客户端全栈 / 服务端中枢+OCR worker / 服务端中枢+批量摆渡 / 服务端本地视觉模型）。服务端内网不能联外网做 OCR，图片必须到客户端 OCR；而内网 VPN 与外网互斥，"服务端下载→客户端 OCR"路线要跨端传图 + VPN 反复切，代价大于"下载留客户端"。选方案 A：图片从来在客户端、只客户端→服务端传一次，复用最大（5 步里 4 步原样），工程量最小。
+- **OCR 留在客户端**：服务端不能联外网调 Gemini/Codex CLI，故 OCR 必须在客户端做（延续 V1 的 pt_ocr 双后端 gemini/claude/codex，走订阅额度不按量计费）。
+- **图片入库约束修订**：V1"图片绝不进库"硬约束在 **V2.0 内网闭环、不外传**前提下解除——服务端可存原图。理由：服务端部署在内网（V1 本机测试，生产上内网服务器），不传外部；图片存磁盘 + DB 存路径，不入 blob（大图进 DB 是反模式）。
+
+### 功能需求
+
+**客户端 CLI 改造（pt_batch.py）**：
+- 步骤 1-4 完全复用现有 pt_extract/pt_ocr/pt_merge/pt_rules，逻辑不动。
+- 步骤 5 新增"上传"模块替代 pt_db 落库：把校验合并后的结构化记录 + 锚定原图，按 (source_file, sheet, row) 唯一键批量上传服务端，覆盖幂等（沿用 V1 唯一键语义）。
+- **上传前先算 content_md5 + 文件大小 查增量**：客户端下载完 xlsx 算 MD5 和 size → 查 `GET /files` 返回的清单（本地缓存 + since 增量拉）→ 命中（同 MD5 + 同 size 已入库）则**跳过抽取/OCR/上传全流程**，省最贵的 OCR 算力。
+- 客户端本地不再持久化 SQLite（pt_db 落库移除/降级为可选缓存）；权威数据在服务端。
+- 手动触发，不引入 watcher/定时（V2.0 不做自动下载）。
+
+**服务端（全新）**：
+
+**去重/合并（核心，V1 踩过的重复坑服务端机制化）**——分两套，时机不同：
+
+**A. 文件去重（入库时做，物化标记 duplicate_of）**：
+- 权威键 = `content_md5 + file_size` 双校验（不靠文件名——V1 踩过同名不同内容 Dawaki 双版本；加 size 兜 xlsx 同内容不同字节的 zip 重打包漏网）。
+- 上传时服务端查 `content_md5+file_size`：
+  - 不存在 → 新入库（存图 + 存记录）
+  - 同 source_file 同 md5+size → upsert 覆盖记录（记录级幂等，沿用 V1 唯一键 (source_file,sheet,row)）
+  - 不同 source_file 同 md5+size → 标 `duplicate_of=原文件`、**只存记录不重存图**（图复用）、不自动删（误删风险留人工）
+- 同 md5+size 的文件在文件去重层就跳过/标记，图只存一份（按 content_md5/sheet/row 组织），无"duplicate 复用图悬空"问题。
+
+**B. 记录合并（查询时窗口函数算，不物化，沿用 V1 pt_report.py 思路——规则改了随时重算，避免与 records 失同步）**：
+- 合并键 fallback 三档（V2.0 砍 L2 area 容错档，保守走 L1→L3→孤儿）：
+  - **L1**：`area+cluster+zone+hub+level+fat` 严格相等（V1 `parse_fat` 归一化解析成功且键等）→ 合并
+  - **L3**：`box_name` 原值清洗后相等（归一化解析失败但同写法，如缺前缀的 H#L#S# 一致）→ 合并
+  - **孤儿**：解析失败且原值也不等 → 标 `box_key_missing` 留人工，**不强行并**（误并比留孤儿危险：把两个真盒子并成一个，有图赢家可能盖错对象，脏数据且查不出）
+- 选赢家 ORDER BY：`evidence DESC, conf_rank ASC, ocr_at DESC`
+  - `evidence=1` 当 `photo_status='有图清晰'`（**V2.0 放宽**：去掉 V1 的 `AND power_check IN('一致','表缺已恢复')`——图清晰即证据，功率以图为准，表格填错不影响图的可信度；功率不符不算图的问题）。模糊图/无图 evidence=0 同档。**evidence 仅用于记录合并选赢家排序，不影响图片存储——所有原图（含模糊图）一律存服务端，不因 OCR 不清晰而丢弃**（模糊图存档供后续模型升级重读或人工复核）。
+  - `conf_rank`：高>中>低>无效（沿用 V1）
+  - `ocr_at DESC`：最新优先
+- 功率值：图清晰以图为准（V1 沿用，power_dbm 来自照片）；模糊图/无图退表格或标问题（power_check='图糊用表'）
+- **L2 area 容错合并 V2.0 不做**：权衡后认定合并键来自表格 box_name（人填，area 是干净字母，无 OCR 数字混淆可兜），area 模糊匹配无可靠判据、误并风险高于收益；V1 命名合规率 98% 支撑 L1 严格键已覆盖大多数。留人工兜底。
+
+- **上传接口**：`POST /files/{source_file}/records`（multipart，每批 ≤50 行/图，避免超限）。服务端按 A 做文件去重 + 记录 upsert 覆盖。原图落磁盘（按 content_md5/sheet/row 组织，同 md5 不重存），DB 存 image_path + content_md5 + file_size + duplicate_of + 结构化字段。覆盖时先写新图→更新 DB 路径→删旧图，事务保证。
+- **查询 API（供 digifiber-conflation 下游拉）**：
+  - `GET /records`：批量拉记录列表，筛 area/zone/hub/box_name/needs_retest/photo_status/conf，分页 page/page_size + 排序。记录合并按 B 在查询时用窗口函数算（不物化）。默认排除 `duplicate_of IS NOT NULL`（重复副本）和 `box_key_missing`（孤儿）；`?include_duplicates=1` / `?include_orphans=1` 显式看全。
+  - `GET /records/{id}`：单条记录详情。
+  - `GET /records/{id}/image`：按需取原图。
+  - 数据 schema 沿用 V1 records 表字段（见「数据模型」章），新增 image_path；files 表加 content_md5/file_size/duplicate_of。
+- **增量去重接口**：`GET /files?since=<ts>` 返回 `[{source_file, content_md5, file_size, record_count, duplicate_of, ocr_at}]`，供客户端上传前查增量跳过。
+- **存储**：DB 沿用 SQLite + pt_db schema（V1 本机测试零迁移），files 表加 content_md5/file_size/duplicate_of、records 表加 image_path；图存磁盘目录。生产上内网服务器时再评估是否迁 PostgreSQL（V2.0 不做）。
+
+### 待 V1 本机测试验证项（规则已定，边界待实测）
+- `content_md5 + file_size` 双校验是否兜得住 xlsx 同内容不同字节的 zip 重打包漏网（极端"同内容同大小不同字节"需实测才知道）
+- L3 box_name 原值相等的误并概率（两个不同盒子原值恰好同写法，概率极低但非零）
+
+### 接口清单
+
+| # | 接口 | 方法·路径 | 用途 | 必要性 |
+|---|------|----------|------|--------|
+| 1 | 健康检查 | `GET /health` | 运维探活 | ✅ |
+| 2 | 已入库文件清单 | `GET /files?since=` | 客户端增量去重依据（含 content_md5/duplicate_of） | ✅ |
+| 3 | 批量上传记录+图 | `POST /files/{source_file}/records` (multipart, 每批≤50) | 客户端上传一个文件的结果，服务端做文件去重(A)+记录合并(B) | ✅ |
+| 4 | 记录列表查询 | `GET /records`（多维筛+分页+排序，默认排除重复副本） | 下游批量拉 | ✅ |
+| 5 | 单条记录 | `GET /records/{id}` | 下游取详情 | ✅ |
+| 6 | 取原图 | `GET /records/{id}/image` | 下游按需取图 | ✅ |
+| 7 | 盒子级聚合 | `GET /boxes` | 盒子维度拉取 | ⚪可选（依赖 V1.1 盒子级去重，后置） |
+| 8 | 导出 CSV | `GET /records/export` | 人导出 | ⚪可选 |
+| 9 | 统计 | `GET /stats` | 覆盖率/分布 | ⚪可选 |
+
+V2.0 做 #1-#6（✅），#7-#9 后置。认证 V1 本机测试无，生产内网再加。不做缩略图/Web 前端/WebSocket。
+
+### 约束修订
+
+- **图片存储（V2.0 解除 V1 禁令）**：服务端在内网闭环、不外传前提下可存原图。客户端临时图片用完即删（V1 习惯保留）；服务端原图持久化。**核心目的之一=OCR 溯源**：V1 图不入库用完删，OCR 结果（power/坐标/盒名/地址/时间）存了但图没了，业务方无法核对结果从哪张图来；V2.0 每条记录的 `image_path` 指向**产生该条 OCR 结果的那张原图**，下游/业务方可通过 `GET /records/{id}/image` 取原图核对 OCR 结果（V1 痛点：结果无图可溯）。所有原图（含模糊图）一律存，不丢弃——模糊图虽不作合并证据，但仍是该记录的溯源依据，且供后续模型升级重读或人工复核。
+- **VPN 切换**：仍由客户端承担（开内网VPN 下载→关外网 OCR→开内网VPN 上传），V2.0 不解决 VPN 互斥、不引入同时通内外网要求。
+
+### 技术方向（V2.0 增量）
+
+| 维度 | 选择 | 理由 |
+|---|---|---|
+| 服务端框架 | FastAPI（Python） | 与现有脚本同语言；自带 OpenAPI 文档；异步上传图友好 |
+| 服务端存储 | SQLite（沿用 pt_db schema）+ 图存磁盘 | V1 本机测试零迁移；图不入 blob |
+| 客户端改造 | pt_batch.py 第 5 步落库换上传 | 复用最大，仅替换持久层出口 |
+| OCR | 延续 pt_ocr 双后端（Gemini/Codex CLI） | 服务端不能联外网，OCR 必须在客户端 |
+| 认证 | V1 本机测试无认证；生产内网再加 | 简单优先 |
+
+### V2.0 明确不做
+
+- 服务端自动下载（下载留客户端）
+- 同时通内外网 / VPN 自动切换
+- Web 前端 / 看板（API 只供 digifiber-conflation 程序化消费）
+- 服务端 OCR（本地视觉模型）
+- PostgreSQL 迁移（生产部署时再评估）
+- 多用户/权限（V2.0 单消费方）
+- **L2 area 容错合并**（合并键 fallback 只走 L1 严格 → L3 原值 → 孤儿；area 容错无可靠判据、误并风险高于收益，留人工兜底）

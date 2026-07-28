@@ -2,7 +2,8 @@
 
 > 本文件记录项目的开发阶段划分、当前进度和剩余工作。
 > 新 session 启动时应首先阅读此文件，了解项目状态后再继续开发。
-> V1.0（xlsx 抽取 / Gemini OCR / 交叉校验入库 / 规则引擎 / 批处理）已建成，代码在 `scripts/` 下，本计划只覆盖 V1.1 三项待办。
+> **V1.0/V1.1（Phase 1-3）已建成**：xlsx 抽取 / OCR / 交叉校验入库 / 规则引擎 / 批处理 / 盒子级去重报表 / 地址结构化 / 倾斜照片复核，代码在 `scripts/` 下，Phase 1-3 不再改动。
+> **V2.0 服务化（Phase 4-7）·本批待开发**：客户端 CLI 上传 + 服务端存储/查询 API，详见 `Product-Spec.md` 末章「V2.0 服务化」。
 
 ---
 
@@ -106,27 +107,159 @@
 
 ---
 
+## Phase 4: 服务端骨架 + 数据层（V2.0 地基）
+
+**交付内容**：
+- 新建 `server/` 目录（FastAPI 服务端，与 `scripts/` 客户端脚本平级）
+- `server/app.py`：FastAPI 实例 + `GET /health` 返回 `{"status":"ok"}`；路由注册入口（后续 Phase 的路由在此挂载）
+- `server/db.py`：SQLite 连接 + schema 初始化。沿用 `scripts/pt_db.py` 的 records/files 表结构与字段（不复制逻辑，可 import pt_db 或重建 schema SQL），并在其基础上扩展：
+  - `files` 表新增 `content_md5 TEXT`、`file_size INTEGER`、`duplicate_of TEXT`（默认 NULL）
+  - `records` 表新增 `image_path TEXT`（默认 NULL）
+  - `connect()` 迁移逻辑：旧库打开自动 ALTER 补这些列（幂等，沿用 pt_db 的 PRAGMA 迁移模式）
+- `server/imagestore.py`：原图磁盘存储。路径按 `content_md5/sheet/row` 组织（同内容文件图只存一份）；提供 `save_image(content_md5, sheet, row, bytes)->path`、`get_image_path(...)`、`exists(...)`、`delete_image(...)`
+- `requirements.txt` 追加 `fastapi==0.140.7`、`uvicorn`、`python-multipart`（联网核验 2026-07，FastAPI 最新稳定版 0.140.7，multipart 上传需 python-multipart）
+
+**Task 清单**：
+- **Task 4.1：FastAPI 骨架 + /health** — 新建 `server/app.py`（FastAPI 实例、`sys.stdout.reconfigure` 不需要——服务端非控制台批处理，但日志中文走 utf-8 仍建议配置）、`GET /health`。新建 `server/__init__.py`。验证：`python -m py_compile server/app.py` + `uvicorn server.app:app` 起来后 `curl localhost:8000/health` 返回 200 `{"status":"ok"}`
+- **Task 4.2：db.py schema + 迁移** — 新建 `server/db.py`：records/files 表 schema（沿用 pt_db 字段 + 新增 content_md5/file_size/duplicate_of/image_path）、`connect()` 自动迁移补列。验证：`py_compile` + 新建空 DB 跑 `PRAGMA table_info(files)`/`PRAGMA table_info(records)` 看到新列；拿一个 V1 旧库（`pt_data.sqlite` 副本）打开不报错且补出新列
+- **Task 4.3：imagestore.py 图存磁盘** — 新建 `server/imagestore.py`：`save_image/get_image_path/exists/delete_image`，路径 `IMAGES_DIR/content_md5/sheet/row.jpg`。验证：`py_compile` + python 写一张测试图、读路径、exists、delete 四步跑通
+
+**关键文件**：
+- `server/app.py`、`server/db.py`、`server/imagestore.py`、`server/__init__.py`（均新建）
+- `requirements.txt`（追加 3 个依赖）
+
+**验收标准**：
+- `python -m py_compile server/app.py server/db.py server/imagestore.py` 通过
+- `uvicorn server.app:app` 启动无错，`curl localhost:8000/health` → 200 `{"status":"ok"}`
+- 新建 DB schema 含全部新列；V1 旧库副本打开自动迁移不报错
+- imagestore 四个函数（save/get/exists/delete）跑通
+
+**已知风险**：服务端 DB schema 沿用 V1 pt_db 结构，但 pt_db.py 的迁移逻辑在 `scripts/` 下——Phase 4 决定是 import 复用还是重建 schema SQL（dev-builder 阶段定，倾向重建独立 schema SQL，避免服务端依赖 scripts/ 客户端代码）
+
+---
+
+## Phase 5: 上传接口 + 文件去重（A）
+
+**交付内容**：
+- `POST /files/{source_file}/records`：接收客户端批量提交的"记录 + 原图"（multipart，每批 ≤50 行/图）。路径参数 `source_file` 作唯一键组成。请求体含：content_md5、file_size、records（JSON 数组，每条含 V1 records 全字段 + sheet + row）、images（图二进制，按 sheet+row 索引）
+- 服务端文件去重（A）：按 `content_md5 + file_size` 双校验：
+  - 不存在 → 新入库（存图 + 存记录，files 表插一条含 md5/size）
+  - 同 source_file 同 md5+size → 记录 upsert 覆盖（沿用 V1 唯一键 (source_file,sheet,row)）
+  - 不同 source_file 同 md5+size → 标 `duplicate_of=原文件 source_file`、**只存记录不重存图**（图复用，imagestore 已按 content_md5 组织）、不自动删
+- 图落磁盘经 `imagestore.save_image`（content_md5/sheet/row），DB records 存 `image_path`；覆盖时先写新图→更新 DB 路径→删旧图，事务保证（sqlite3 事务 + imagestore 操作顺序）
+- `GET /files?since=<ts>`：返回 `[{source_file, content_md5, file_size, record_count, duplicate_of, ocr_at}]`，供客户端上传前查增量跳过
+
+**Task 清单**：
+- **Task 5.1：上传接口 + multipart 解析 + 记录 upsert** — `server/routes_upload.py`（或直接 app.py）：`POST /files/{source_file}/records`，python-multipart 解析 records JSON + images，记录按 (source_file,sheet,row) upsert 入库。**content_md5 格式校验（Phase 4 red-locks 前置约束）**：接口入口校验 content_md5 匹配 md5 摘要格式，非法直接返回 400（imagestore 库层已有 `[/\\:]|\.\.` traversal 黑名单兜底，接口层再挡一道；此处也是 TODO #12 白名单权衡的落点——确认 content_md5 恒为 md5 摘要则接口用 `^[0-9a-fA-F]{32}$` 白名单）。验证：`py_compile` + curl 上传一个文件的一批记录（含 2-3 行+图），DB 有记录、磁盘有图、image_path 非空；**curl 传恶意 content_md5（`../../etc`）应返回 400**（red-locks 用例，tester 补失败测试锁定）
+- **Task 5.2：文件去重双校验 + duplicate_of 标记 + 图不重存** — 上传接口内加文件去重逻辑：算/取 content_md5+file_size，三分支（新入库/upsert 覆盖/标 duplicate_of 不重存图）。验证：curl 传同 source_file 同内容两次→覆盖幂等记录数不变；传不同 source_file 同内容→第二次 duplicate_of 标记、磁盘图不增
+- **Task 5.3：GET /files 增量接口** — `GET /files?since=<ts>` 返回文件清单。验证：curl 查返回 JSON 数组含已上传文件，since 过滤生效
+
+**关键文件**：
+- `server/app.py`（挂载上传路由）、`server/routes_upload.py`（新建，上传 + GET /files）、`server/db.py`（加 upsert/查询函数）、`server/imagestore.py`（已建，调用）
+
+**验收标准**：
+- `py_compile` 通过
+- curl 上传记录+图 → DB records 有、磁盘图存在、image_path 写入
+- 同文件同内容重传 → 记录数不变（覆盖幂等）
+- 不同文件同内容 → 第二次 duplicate_of 非空、磁盘图数不增（图复用）
+- 覆盖时旧图被删（imagestore 无悬空旧图）
+- `curl "localhost:8000/files"` 返回已上传文件清单
+
+**已知风险**：multipart 每批 ≤50 图，单文件上千图需客户端分多批 POST（Phase 7 客户端实现分批）；服务端单批大小限制由 uvicorn/python-multipart 默认配置，必要时调参
+
+---
+
+## Phase 6: 查询 API + 记录合并（B）
+
+**交付内容**：
+- `GET /records`：批量拉记录列表。查询参数：area/zone/hub/box_name/needs_retest/photo_status/conf（任选筛）、page/page_size（分页，默认 page=1 page_size=50）、sort（排序，默认 ocr_at desc）。**记录合并在查询时用窗口函数算，不物化**（沿用 V1 pt_report.py 思路）：
+  - 合并键 fallback：L1 `area+cluster_code+zone+hub+level+fat` 严格相等 → L3 `box_name` 原值清洗后相等 → 都不中标 `box_key_missing`（孤儿）
+  - 选赢家 ORDER BY：`evidence DESC, conf_rank ASC, ocr_at DESC`；`evidence=1` 当 `photo_status='有图清晰'`（V2.0 放宽，去掉 V1 的 `AND power_check IN(...)`）；模糊图/无图 evidence=0
+  - 默认排除 `duplicate_of IS NOT NULL` 和 `box_key_missing`；`?include_duplicates=1` / `?include_orphans=1` 显式看全
+- `GET /records/{id}`：单条记录详情
+- `GET /records/{id}/image`：取该记录原图（返回 image/jpeg，FileResponse）
+
+**Task 清单**：
+- **Task 6.1：GET /records 列表 + 分页筛选 + 记录合并窗口函数** — `server/routes_query.py`：实现合并 SQL（L1/L3 fallback + evidence 放宽 + 窗口函数选赢家，可参考 `scripts/pt_report.py` 的 BOXES_SQL 但 records 级非 box 级）+ 分页筛选 + 默认排除 duplicate/orphan。验证：curl 查列表返回分页 JSON；筛 area=XXX 生效；同盒多记录只返回赢家
+- **Task 6.2：单条 + 取图接口** — `GET /records/{id}` 返回单条详情；`GET /records/{id}/image` 用 imagestore 取图返回 FileResponse。验证：curl 取图返回 200 image/jpeg 内容；不存在的 id 返回 404
+
+**关键文件**：
+- `server/app.py`（挂载查询路由）、`server/routes_query.py`（新建）、`server/db.py`（加查询函数）、`server/imagestore.py`（取图）
+
+**验收标准**：
+- `py_compile` 通过
+- curl `GET /records?page=1&page_size=10` 返回 ≤10 条 + 总数
+- 筛选参数生效（如 `?needs_retest=是`）
+- 同盒多记录（造数据：同 box_key 2 条，1 有图清晰 1 无图）→ 列表只返回有图清晰的赢家
+- `GET /records/{id}/image` 返回原图二进制
+- 默认排除 duplicate 和 orphan；`?include_duplicates=1` 能查到 duplicate 记录
+
+**已知风险**：L1/L3 fallback 合并的 SQL 比较复杂（窗口函数 + 两级键匹配 + evidence），需仔细写和测；evidence 放宽后 V1 pt_report.py 离线报表的 evidence 定义与服务端不一致（V1 仍严格），本 Phase 服务端用放宽版，V1 离线报表不动
+
+---
+
+## Phase 7: 客户端 CLI 改造 + 端到端联调
+
+**交付内容**：
+- 改 `scripts/pt_batch.py`：第 5 步"pt_db 落库"换成"上传服务端"——校验合并后的结构化记录 + 原图，分批（每批 ≤50 行/图）`POST` 到 `{SERVER_URL}/files/{source_file}/records`，覆盖幂等
+- 上传前先算 `content_md5 + file_size`（下载完的 xlsx），查 `GET {SERVER_URL}/files` 增量清单（本地缓存 + since 增量拉），命中（同 md5+size 已入库）则**跳过抽取/OCR/上传全流程**
+- 客户端本地 SQLite 落库降级为可选缓存（pt_db 落库默认不走，可 `--local-db` 保留兼容）；权威数据在服务端
+- `--server-url` 参数（默认 `http://localhost:8000`，V1 本机测试）
+- 端到端：下载→抽取→OCR→校验→上传→服务端存→curl 查询拉回验证
+
+**Task 清单**：
+- **Task 7.1：pt_batch.py 第 5 步落库换上传 + 分批** — 改 `scripts/pt_batch.py`：第 5 步从 `pt_db.store(...)` 改为构造 multipart（records JSON + images）分批 POST 到服务端；加 `--server-url` 参数（默认 localhost:8000）；pt_db 落库降级 `--local-db`。验证：`py_compile` + 跑 `pt_batch.py <目录> --limit 1 --server-url localhost:8000`（服务端已起），服务端 DB 有该文件记录+图
+- **Task 7.2：上传前 content_md5+size 查增量跳过** — pt_batch.py 下载完 xlsx 算 md5+size，查 `GET /files` 缓存清单，命中跳过全流程。验证：跑两次同文件，第二次日志显示"已入库跳过"、不调 OCR
+- **Task 7.3：端到端联调** — 真实文件全流程：开 VPN 下载→抽取→关 VPN OCR→校验→开 VPN 上传→服务端存→curl 查记录+取图。验证：服务端有数据有图，`curl GET /records` 拉回该文件记录，`GET /records/{id}/image` 取回原图
+
+**关键文件**：
+- `scripts/pt_batch.py`（改第 5 步 + 加 --server-url + 增量查询）
+
+**验收标准**：
+- `py_compile scripts/pt_batch.py` 通过
+- `pt_batch.py <目录> --limit 1 --server-url localhost:8000` 跑通，服务端 DB + 磁盘有该文件记录+图
+- 同文件第二次跑 → 跳过全流程（不调 OCR，日志确认）
+- 端到端：curl 查回记录、取回原图
+- V1 原有 `--local-db` 兼容模式仍能落本地 SQLite（不破坏）
+
+**已知风险**：VPN 切换在客户端（开下/关 OCR/开上传）——V2.0 不解决 VPN 互斥，需用户手动切或脚本提示；端到端联调需真实数据+VPN 窗口，可能受网络/OCR 额度影响
+
+---
+
+## 多 Agent 编排评估（用户已提"多 agent 开发"）
+
+按框架铁律：**编码默认串行**（共享 DB schema/路由注册，非真正独立）。V2.0 Phase 4-7 依赖链 4→5→6→7，共享 `server/db.py` schema 与 `server/app.py` 路由注册，并行会冲突。
+- **可并行候选**：Phase 5（上传写）与 Phase 6（查询读）在 Phase 4 钉死 schema + 接口契约后，可 worktree 隔离并行（不同路由文件 routes_upload.py / routes_query.py，不共改同文件），主 Agent 合并。
+- **真正独立甜区**（适合 Workflow fan-out）：Phase 6 完成后的 code-review 多维度并行审查、tester 批量写回归测试——只读/可汇总工作。
+- 建议：**Phase 4 串行地基 → Phase 5/6 评估 worktree 并行（须用户 opt-in Workflow，成本 ~15x）→ Phase 7 串行（依赖上传接口）**。是否用 Workflow 并行编码由用户拍板。
+
+---
+
 ## 技术栈
 
 | 层级 | 技术 | 版本 | 说明 |
 |------|------|------|------|
 | 语言 | Python | 3.12 | 现有代码约束；stdlib 为主 |
 | 存储 | SQLite（stdlib sqlite3） | Python 3.12 内置（SQLite ≥3.35） | 窗口函数 ROW_NUMBER 可用（需 ≥3.25，满足）；单文件零服务器 |
-| HTTP | requests | requirements.txt 现有 | Gemini REST 直连 |
+| HTTP 客户端 | requests | requirements.txt 现有 | Gemini REST 直连；V2.0 客户端上传也用 |
 | 图像 | pillow | requirements.txt 现有 | OCR 前缩图 1024 |
 | OCR 主模型 | gemini-3.5-flash | GA（联网验证 2026-07） | 全量 OCR，thinkingBudget:0 |
 | OCR 复核模型 | gemini-3.1-pro-preview | preview（联网验证 2026-07） | 仅 Phase 3 硬样本复核 |
+| **V2.0 服务端框架** | **FastAPI** | **0.140.7（联网核验 2026-07 PyPI）** | Python，与现有脚本同语言；自带 OpenAPI；异步上传图友好 |
+| **V2.0 服务端 ASGI** | **uvicorn** | **最新稳定版** | FastAPI 运行器 |
+| **V2.0 上传解析** | **python-multipart** | **最新稳定版** | FastAPI multipart 文件上传必需 |
 
-无新增第三方依赖，requirements.txt 不变。
+V2.0 新增 3 个服务端依赖（fastapi==0.140.7、uvicorn、python-multipart），写入 requirements.txt；pip 安装加镜像 `-i https://mirrors.aliyun.com/pypi/simple`。
 
 ## 数据库表
 
 | 表名 | 所属 Phase | 用途 |
 |------|-----------|------|
-| `records` | V1.0 已有；Phase 2 增列 addr_area / addr_estate / addr_street（connect() 自动迁移旧库） | 记录主表 |
-| `files` | V1.0 已有，本计划不改 | 文件级增量去重 |
+| `records` | V1.0 已有；Phase 2 增 addr_area/addr_estate/addr_street；**Phase 4 增 image_path** | 记录主表 |
+| `files` | V1.0 已有；**Phase 4 增 content_md5/file_size/duplicate_of** | 文件级增量去重 + 跨文件内容去重标记 |
 
-盒子级报表是查询时导出的 CSV，不建物化表（规则改了随时重导，避免与 records 失同步）。
+V2.0 图存磁盘（`server/imagestore.py` 按 content_md5/sheet/row 组织），不入 DB blob。
+记录合并在查询时用窗口函数算，不建物化盒子表（沿用 V1 pt_report.py 思路，规则改随时重算）。
 
 ## 开发规则
 
@@ -136,4 +269,6 @@
 - 包管理：pip + requirements.txt（须加 `-i https://mirrors.aliyun.com/pypi/simple` 镜像；本计划无新依赖）
 - 所有新脚本开头 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`（Windows GBK 硬约束）
 - 涉及 Gemini 调用的验证步骤须关 VPN；只动 SQLite 的 Phase 1 无 VPN 要求
-- 图片只进本地临时目录，处理完立即删，绝不入库（信息安全硬约束）
+- ~~图片只进本地临时目录，处理完立即删，绝不入库~~ → **V2.0 修订**：内网闭环、不外传前提下，服务端可存原图（磁盘 + DB 存路径）；客户端临时图片用完即删保留；服务端原图持久化（OCR 溯源：每条记录 image_path 指向产生其 OCR 结果的原图）
+- **V2.0 服务端**：`server/` 目录，`uvicorn server.app:app` 启动；服务端 DB 沿用 pt_db schema + Phase 4 新增字段；V2.0 Phase 4-7 commit message 格式 `phase-N-v2: 简要描述`
+- **V2.0 编排**：Phase 4-7 默认串行（共享 schema/路由）；Phase 5/6 worktree 并行须经用户 opt-in Workflow
