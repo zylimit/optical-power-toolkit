@@ -22,6 +22,7 @@ import sys
 import time
 
 import pt_db
+import pt_upload
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,9 +57,16 @@ def collect_xlsx(inputs):
     return [f for f in files if not os.path.basename(f).startswith("~$")]
 
 
-def process_one(xlsx, conn, args):
+def _already_done(ctx, name, xlsx, args):
+    """增量判断：本地库按文件名查 files 表；上传模式按 content_md5 查服务端清单。"""
+    if args.local_db:
+        return pt_db.file_done(ctx["conn"], name)
+    return pt_upload.content_md5(xlsx) in ctx["done_md5"]
+
+
+def process_one(xlsx, ctx, args):
     name = os.path.basename(xlsx)
-    if pt_db.file_done(conn, name):
+    if _already_done(ctx, name, xlsx, args):
         if args.mode == "skip":
             print(f"[跳过] {name}（已入库）"); return "skip"
         if args.mode == "ask":
@@ -92,10 +100,15 @@ def process_one(xlsx, conn, args):
         photos = sum(1 for rec in recs if rec.get("has_photo"))
         if not recs:
             # 没检测到光功率行：也登记该文件（0 记录），避免每批重试白占名额
-            pt_db.upsert_file(conn, {"file_name": name, "file_size": os.path.getsize(xlsx),
-                                     "sheets": 0, "rows": 0, "photos": 0, "record_count": 0,
-                                     "model": model_label, "processed_at": time.strftime("%Y-%m-%d %H:%M:%S")})
-            conn.commit()
+            if args.local_db:
+                pt_db.upsert_file(ctx["conn"], {"file_name": name, "file_size": os.path.getsize(xlsx),
+                                         "sheets": 0, "rows": 0, "photos": 0, "record_count": 0,
+                                         "model": model_label, "processed_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+                ctx["conn"].commit()
+            else:
+                # 上传模式：POST 空 records 让服务端登记该文件（去重清单据 content_md5）
+                ctx["client"].upload(name, pt_upload.content_md5(xlsx),
+                                     os.path.getsize(xlsx), [], {}, model=model_label)
             print(f"[空] {name}: 无光功率行，已登记跳过")
             return "empty"
         print(f"[处理] {name}: {len(recs)} 行, {photos} 图 -> OCR ...")
@@ -113,10 +126,20 @@ def process_one(xlsx, conn, args):
         if r.returncode != 0:
             print(f"  ✗ OCR 失败(exit {r.returncode})，跳过入库，保留临时 {tmp}")
             return "fail"
-        # ③ 入库（覆盖该文件旧记录），并记 file_size
-        pt_db.store(conn, rows_json, ocr_dir, model_label, mode="refresh")
-        conn.execute("UPDATE files SET file_size=? WHERE file_name=?", (os.path.getsize(xlsx), name))
-        conn.commit()
+        # ③ 落库：本地 SQLite（--local-db，V1 兼容）或上传服务端（默认）
+        if args.local_db:
+            pt_db.store(ctx["conn"], rows_json, ocr_dir, model_label, mode="refresh")
+            ctx["conn"].execute("UPDATE files SET file_size=? WHERE file_name=?",
+                                (os.path.getsize(xlsx), name))
+            ctx["conn"].commit()
+        else:
+            up_recs = pt_upload.build_upload_records(rows_json, ocr_dir, model_label)
+            images = pt_upload.collect_images(rows_json)
+            md5 = pt_upload.content_md5(xlsx)
+            res = ctx["client"].upload(name, md5, os.path.getsize(xlsx),
+                                       up_recs, images, model=model_label)
+            print(f"  [上传] {name}: {res['records_stored']} 条, {res['images_stored']} 图"
+                  + (f", 内容重复于 {res['duplicate_of']}" if res.get("duplicate_of") else ""))
         return "done"
     finally:
         # ④ 删临时（成功才删；失败上面已 return，保留现场）
@@ -128,6 +151,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("inputs", nargs="*", help="目录或 xlsx 文件")
     ap.add_argument("--db", default="pt_data.sqlite")
+    ap.add_argument("--server-url", default="http://localhost:8000",
+                    help="服务端地址（上传模式，默认）")
+    ap.add_argument("--local-db", action="store_true",
+                    help="走 V1 本地 SQLite 落库（默认走上传服务端）")
     ap.add_argument("--mode", default="skip", choices=["skip", "refresh", "ask"])
     ap.add_argument("--model", default="gemini-cli", help="写库的 model 元数据标签（gemini 后端时生效）")
     ap.add_argument("--backend", choices=["gemini", "claude", "codex"], default="gemini")
@@ -140,24 +167,40 @@ def main():
     ap.add_argument("--where", default=None, help="导出 SQL 条件，如 \"conf='高'\"")
     args = ap.parse_args()
 
-    conn = pt_db.connect(args.db)
+    # 落库出口：本地 SQLite（--local-db，V1）或上传服务端（默认）。
+    # ctx 统一携带两模式各自需要的句柄，process_one 据 args.local_db 分流。
+    if args.local_db:
+        conn = pt_db.connect(args.db)
+        ctx = {"conn": conn}
+    else:
+        conn = None
+        client = pt_upload.ServerClient(args.server_url)
+        try:
+            done_md5 = client.list_done_md5()
+        except Exception as e:
+            print(f"✗ 连不上服务端 {args.server_url}：{e}"); return
+        ctx = {"client": client, "done_md5": done_md5}
 
+    # --export / --export-only 是本地库能力，仅 --local-db 模式支持
     if args.export_only:
+        if not args.local_db:
+            print("✗ --export-only 需配合 --local-db（导出读本地 SQLite）"); return
         pt_db.export(conn, args.export_only, args.where)
         conn.close(); return
 
     files = collect_xlsx(args.inputs)
     if args.limit and args.mode == "skip":
         # 增量：只挑还没入库的，取前 N 个（配合“10个10个吃”）
-        files = [f for f in files if not pt_db.file_done(conn, os.path.basename(f))][:args.limit]
+        files = [f for f in files if not _already_done(ctx, os.path.basename(f), f, args)][:args.limit]
     elif args.limit:
         files = files[:args.limit]
-    print(f"待处理 {len(files)} 个 xlsx，模式={args.mode}，后端={args.backend}\n" + "=" * 60)
+    sink = "本地SQLite" if args.local_db else f"服务端 {args.server_url}"
+    print(f"待处理 {len(files)} 个 xlsx，模式={args.mode}，后端={args.backend}，落库={sink}\n" + "=" * 60)
     stats = {"done": 0, "skip": 0, "fail": 0, "empty": 0}
     started = time.time()
     for i, xlsx in enumerate(files, 1):
         try:
-            stats[process_one(xlsx, conn, args)] += 1
+            stats[process_one(xlsx, ctx, args)] += 1
         except Exception as e:
             print(f"  ✗ 异常 {os.path.basename(xlsx)}: {e}")
             stats["fail"] += 1
@@ -165,11 +208,14 @@ def main():
             print(f"--- 进度 {i}/{len(files)}  入库{stats['done']} 跳过{stats['skip']} 失败{stats['fail']} ---")
 
     print("=" * 60)
-    total = conn.execute("SELECT count(*) FROM records").fetchone()[0]
-    print(f"完成: 入库{stats['done']} 跳过{stats['skip']} 失败{stats['fail']}, 库内共 {total} 条记录, 耗时 {time.time()-started:.0f}s")
-    if args.export:
-        pt_db.export(conn, args.export, args.where)
-    conn.close()
+    if args.local_db:
+        total = conn.execute("SELECT count(*) FROM records").fetchone()[0]
+        print(f"完成: 入库{stats['done']} 跳过{stats['skip']} 失败{stats['fail']}, 库内共 {total} 条记录, 耗时 {time.time()-started:.0f}s")
+        if args.export:
+            pt_db.export(conn, args.export, args.where)
+        conn.close()
+    else:
+        print(f"完成: 上传{stats['done']} 跳过{stats['skip']} 失败{stats['fail']}, 耗时 {time.time()-started:.0f}s")
 
 
 if __name__ == "__main__":
