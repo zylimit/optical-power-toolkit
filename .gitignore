@@ -19,3 +19,4 @@ scripts/pt_ocr_tmp_*/
 .vscode/
 AGENTS.md
 audit*.txt
+server/images/
