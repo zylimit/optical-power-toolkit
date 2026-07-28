@@ -53,6 +53,15 @@ CODEX_MODEL = "gpt-5.6-terra"
 CODEX_REASONING_EFFORT = "medium"
 CODEX_TIMEOUT = 480
 
+# token-plan 路线（--backend tokenplan，阿里云 token-plan 网关，Anthropic
+# Messages API 格式的壳，后端是通义千问 Qwen 多模态；订阅已付费不按量计费）。
+# 认证走 Authorization: Bearer（不是 x-api-key）；qwen 会在 content 数组里
+# 返回 thinking 块 + text 块，解析时只取 text 块。订阅不像 claude 那条限流那么
+# 紧，不强制单线程，沿用通用短退避（同 gemini/codex 节奏）。
+TOKENPLAN_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1/messages"
+TOKENPLAN_MODEL = "qwen3.8-max-preview"
+TOKENPLAN_HTTP_TIMEOUT = 300     # 秒；10 张 base64 图一个请求，给足传输+推理余量
+
 
 class FatalOCRError(RuntimeError):
     """确定性环境错误（如目录不受信任）：重试无意义，直接终止整个运行，
@@ -343,6 +352,94 @@ def ocr_batch_claude(items, retries=5, downscale=0):
     return [results[i] for i in range(len(items))]
 
 
+def _tokenplan_key():
+    """token-plan 网关的 key，来源优先级：环境变量 ANTHROPIC_AUTH_TOKEN →
+    项目根 .tokenplan_key 文件（gitignored 的本机测试兜底）。都无则返回 None，
+    由调用方报错退出。"""
+    key = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    if key:
+        return key.strip()
+    # 项目根 = scripts/ 的上一级
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    key_file = os.path.join(root, ".tokenplan_key")
+    if os.path.exists(key_file):
+        with open(key_file, encoding="utf-8") as f:
+            return f.read().strip()
+    return None
+
+
+def _anthropic_text_block(content):
+    """从 Anthropic content 数组里取第一个 type==text 块的 text。
+    qwen 会返回 thinking 块（+ 可能其他块），跳过只取 text。"""
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            return block.get("text", "")
+    raise ValueError("响应 content 数组里没有 text 块")
+
+
+def ocr_batch_tokenplan(items, retries=5, downscale=0):
+    """OCR 一批图片——token-plan 订阅路线（阿里云网关，Anthropic Messages API
+    格式，后端 Qwen 多模态）。与 ocr_batch_claude 结构平行、返回结构一致
+    （与 items 一一对应的 _record/_fail 列表），main() 统一调度。
+
+    与 claude 后端的三处差异：URL(TOKENPLAN_URL)、认证 header 走
+    Authorization: Bearer、模型 TOKENPLAN_MODEL；返回解析要跳过 qwen 的
+    thinking 块只取 text 块（_anthropic_text_block）。退避沿用通用短退避
+    （同 gemini/codex 节奏），不做 claude 那种 429 长退避——订阅不限流那么紧。"""
+    import requests
+    url = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/") or TOKENPLAN_URL
+    if not url.endswith("/v1/messages"):
+        # 若用环境变量给的是基址（不含路径），补上标准 Messages 路径
+        url = url.rstrip("/") + "/v1/messages" if not url.endswith("/messages") else url
+    key = _tokenplan_key()
+    if not key:
+        raise FatalOCRError(
+            "缺 token-plan key：设环境变量 ANTHROPIC_AUTH_TOKEN，"
+            "或在项目根放 .tokenplan_key 文件")
+    headers = {"Authorization": f"Bearer {key}",
+               "anthropic-version": "2023-06-01",
+               "content-type": "application/json"}
+    results = {}   # items 下标 -> 结果（准备失败的图先落定，不进请求）
+    sending = []   # (items 下标, base64, mime)
+    for i, it in enumerate(items):
+        try:
+            b64, mime = _image_to_base64(it["image"], downscale)
+            sending.append((i, b64, mime))
+        except Exception as e:  # 单图坏了不连累整批，也不值得重试
+            results[i] = _fail(it, f"图片读取失败 {type(e).__name__}: {e}")
+    last = "本批没有可发送的图片"
+    if sending:
+        content = [{"type": "image",
+                    "source": {"type": "base64", "media_type": m, "data": b}}
+                   for _, b, m in sending]
+        content.append({"type": "text", "text": claude_batch_prompt(len(sending))})
+        body = {"model": TOKENPLAN_MODEL, "max_tokens": 4096,
+                "messages": [{"role": "user", "content": content}]}
+        for attempt in range(1, retries + 1):
+            try:
+                r = requests.post(url, headers=headers, json=body,
+                                  timeout=TOKENPLAN_HTTP_TIMEOUT)
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:160]}")
+                text = _anthropic_text_block(r.json()["content"])
+                arr = _extract_json_array(text)
+                if not isinstance(arr, list) or not arr:
+                    raise ValueError("响应不是非空 JSON 数组")
+                by_idx = {d["idx"]: d for d in arr
+                          if isinstance(d, dict) and isinstance(d.get("idx"), int)}
+                for n, (i, _b, _m) in enumerate(sending, 1):
+                    results[i] = (_record(items[i], by_idx[n]) if n in by_idx
+                                  else _fail(items[i], "批量响应缺少该图条目"))
+                break
+            except Exception as e:
+                last = f"{type(e).__name__}: {e}"
+                if attempt < retries:
+                    time.sleep(min(20, 2 * attempt))  # 通用短退避，同 gemini 节奏
+    for i, _b, _m in sending:
+        results.setdefault(i, _fail(items[i], last))
+    return [results[i] for i in range(len(items))]
+
+
 def ocr_batch_codex(items, codex, retries=5, downscale=0):
     """OCR 一批图片——Codex 订阅路线（本机 CLI，`-i` 传图 + `-o` 落最终消息到
     文件，避免解析 `--json` 事件流）。与 ocr_batch/ocr_batch_claude 签名和
@@ -403,10 +500,11 @@ def main(argv=None):
                     help="并发批次数（同时跑几个 gemini CLI 子进程；OAuth 个人额度上限未实测，保守默认 4）")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--downscale", type=int, default=0, help="缩到该最大边(px)再发；0=原图")
-    ap.add_argument("--backend", choices=["gemini", "claude", "codex"], default="gemini",
+    ap.add_argument("--backend", choices=["gemini", "claude", "codex", "tokenplan"], default="gemini",
                     help="OCR 后端：gemini=本机 gemini CLI(OAuth 订阅额度，默认)；"
                          "claude=mango-litellm 网关 Claude 订阅路线（同样不计费）；"
-                         "codex=本机 codex CLI(ChatGPT 订阅额度，codex login 登录，同样不计费)")
+                         "codex=本机 codex CLI(ChatGPT 订阅额度，codex login 登录，同样不计费)；"
+                         "tokenplan=阿里云 token-plan 网关 Qwen 多模态（订阅已付费不计费）")
     args = ap.parse_args(argv)
 
     gemini = None
@@ -426,6 +524,10 @@ def main(argv=None):
         codex = _codex_cmd()
         if not codex:
             print("PATH 上找不到 codex CLI（npm i -g @openai/codex 并完成 codex login 登录）"); return 2
+    elif args.backend == "tokenplan":
+        if not _tokenplan_key():
+            print("缺 token-plan key（--backend tokenplan 必需）："
+                  "设环境变量 ANTHROPIC_AUTH_TOKEN，或在项目根放 .tokenplan_key 文件"); return 2
     else:
         gemini = _gemini_cmd()
         if not gemini:
@@ -440,7 +542,8 @@ def main(argv=None):
     pending = [r for r in todo if not os.path.exists(result_path(args.out, r))]
     chunks = [pending[i:i + BATCH_SIZE] for i in range(0, len(pending), BATCH_SIZE)]
     backend_desc = {"claude": "Claude 订阅(mango-litellm)",
-                     "codex": f"Codex CLI 订阅({CODEX_MODEL})"}.get(args.backend, "Gemini CLI(OAuth)")
+                     "codex": f"Codex CLI 订阅({CODEX_MODEL})",
+                     "tokenplan": f"token-plan 订阅({TOKENPLAN_MODEL})"}.get(args.backend, "Gemini CLI(OAuth)")
     print(f"待识别 {len(todo)} 张(已完成 {len(todo)-len(pending)}，本次跑 {len(pending)})，"
           f"{len(chunks)} 批 x {BATCH_SIZE} 张，{args.workers} 并发批次，{backend_desc}")
     started = time.time()
@@ -450,6 +553,8 @@ def main(argv=None):
             futs = {ex.submit(ocr_batch_claude, c, 5, args.downscale): c for c in chunks}
         elif args.backend == "codex":
             futs = {ex.submit(ocr_batch_codex, c, codex, 5, args.downscale): c for c in chunks}
+        elif args.backend == "tokenplan":
+            futs = {ex.submit(ocr_batch_tokenplan, c, 5, args.downscale): c for c in chunks}
         else:
             futs = {ex.submit(ocr_batch, c, gemini, 5, args.downscale): c for c in chunks}
         for fut in as_completed(futs):

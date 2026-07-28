@@ -74,7 +74,8 @@ def process_one(xlsx, ctx, args):
                 print("  跳过"); return "skip"
 
     # 写库的 model 元数据按后端定，防止 claude/codex 路线被误标成 gemini
-    model_label = {"claude": "claude-sonnet-4-6", "codex": "codex-gpt-5.6-terra"}.get(
+    model_label = {"claude": "claude-sonnet-4-6", "codex": "codex-gpt-5.6-terra",
+                   "tokenplan": "qwen3.8-max-preview"}.get(
         args.backend, args.model)
     tmp = os.path.join(args.tmp, re.sub(r"[^0-9A-Za-z]+", "_", name)[:60])
     shutil.rmtree(tmp, ignore_errors=True)
@@ -157,7 +158,7 @@ def main():
                     help="走 V1 本地 SQLite 落库（默认走上传服务端）")
     ap.add_argument("--mode", default="skip", choices=["skip", "refresh", "ask"])
     ap.add_argument("--model", default="gemini-cli", help="写库的 model 元数据标签（gemini 后端时生效）")
-    ap.add_argument("--backend", choices=["gemini", "claude", "codex"], default="gemini")
+    ap.add_argument("--backend", choices=["gemini", "claude", "codex", "tokenplan"], default="gemini")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--downscale", type=int, default=1024)
     ap.add_argument("--tmp", default="pt_tmp", help="本地临时目录（用完即删）")
