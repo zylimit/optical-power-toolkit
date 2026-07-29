@@ -40,3 +40,4 @@ __pycache__/
 
 # 密钥（绝不进镜像）
 .tokenplan_key
+.env
