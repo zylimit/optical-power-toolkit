@@ -1,5 +1,5 @@
 # Project: optical-power-toolkit
-_Last updated: 2026-07-28（V2.0 服务化 Phase 4-7 全部完成：服务端 server/（骨架+DB+imagestore+上传去重A+查询合并B+取图）+ 客户端 pt_batch.py 落库换上传，全链路 mock 端到端实测通；commit 21e230d/1ab29c9/10d92a3/dbc5253。Fast Mode 开启。剩真实 xlsx+OCR+VPN 全链路未跑，见 TODO #11）_
+_Last updated: 2026-07-29（V2.0 内网部署成功：7.183.255.169:8000 /health 200；WSL build+load+host网络；数据盘/srv；文档commit c11f950 因VPN未push。V2.0 代码+测试+检视已完成。.claude/框架改动用户裁定搁置不管）_
 
 ## Pinned（仅高置信"必须遵守"写入；受保护不可修订）
     - 图片绝不入库（信息安全硬约束）：DB 只存文本/数值，图片仅本地临时目录过一次 OCR，每个文件处理完立即删

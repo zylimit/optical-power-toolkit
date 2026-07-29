@@ -22,3 +22,8 @@ audit*.txt
 server/images/
 server/*.db
 server/*.db-*
+.tokenplan_key
+
+# 容器镜像出包产物(大文件不入库)
+opt.tar
+opt.tar.gz
