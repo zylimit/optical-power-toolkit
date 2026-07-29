@@ -1,5 +1,5 @@
 # Project: optical-power-toolkit
-_Last updated: 2026-07-29（V2.0 内网部署成功 + onebox下载1文件上传链路打通：LPO文件→OCR→上传7.183.255.169→接口可查/可取图。auth.py改本机Chrome启动规避playwright浏览器下载失败）_
+_Last updated: 2026-07-29（本地MD5去重：处理前记MD5防重复OCR/上传）_
 
 ## Pinned（仅高置信"必须遵守"写入；受保护不可修订）
     - 图片绝不入库（信息安全硬约束）：DB 只存文本/数值，图片仅本地临时目录过一次 OCR，每个文件处理完立即删
@@ -89,6 +89,7 @@ _Last updated: 2026-07-29（V2.0 内网部署成功 + onebox下载1文件上传�
     - （无）复核工程已 100% 收官，见 Done；剩余均为待办清理项，见 TODO
 
 ## Done（最近完成的放前面）
+    - 2026-07-29: [本地MD5去重] 处理前算文件 content_md5 并落本地清单 `processed_md5.tsv`，与服务端 `/files` MD5 合并去重；同内容改名/拷贝也跳过，避免重复OCR/上传。服务端不可达时仍可仅靠本地清单防重。改动：`pt_upload.load_processed_md5/remember_processed_md5` + `pt_batch._already_done/_mark_done` + `--processed-md5-file`。gitignore 忽略运行态清单。
     - 2026-07-29: [OCR送模不压缩] `pt_batch.py --downscale` 默认从 1024 改为 **0（原图）**。此前入库/接口图本就不压缩（xlsx内嵌15-32KB小图原样落盘，字节一致已核）；只有 OCR 送模会因 batch 默认1024 缩图。现默认与 `pt_ocr.py --downscale 0` 对齐，送模也不压缩。需要提速时仍可显式 `--downscale 1024`。evidence：`pt_batch.py` argparse default=0；`_prepare_image/_image_to_base64(downscale=0)` 原字节复制/原图base64 验证通过
     - 2026-07-29: [V2.0 onebox下载试通] VPN下完成 onebox SSO 登录并下载1个真实xlsx：`LPO_Z3_C1 - Ascort Towers_FAT Extension _(COMPLETED).xlsx`（约86KB，2行1图）→ tokenplan OCR 1张48s → 上传内网 `http://7.183.255.169:8000` 成功（lpo.xlsx recs=2）→ 接口验证：`/files` 可见、`/records` total=216（含LPO两条）、`/records/361/image` 200 image/jpeg 15926B。**改动**：`scripts/onebox_downloader/auth.py` 登录/刷新会话优先本机 Chrome/Edge（channel=chrome/msedge），规避 VPN/内网下 playwright 自带 chromium 下载 EACCES 失败。**已知坑**：① 下载器 size 校验过严（期望86016实到87929）会把已下完文件判失败，本次手动收.part；② limit=1 可能抽到超大文件（IJU 215MB.part卡住），宜先 list 再挑小文件下。evidence：onebox_auth.json 生成、_onebox_try 文件、curl /files+/records/361/image
     - 2026-07-28: [V2.0 真实数据端到端] 用真 xlsx（Ketu_ojota_C1_Z3_PT_24122025V6，本地 Data/）走完整 V2.0 链路验证通：pt_extract 抽 351 行表格数据（box_name/power_table/passfail 全有）→ pt_upload 合并+上传 351 条到服务端 → 服务端 GET /files 入库 ketu.xlsx → **GET /records 合并去重 total=206**（351 原始行→206 唯一盒子，重复 H/L/S 子端口归并）→ 筛 area=KJT 206 ✓。box/power/area 全字段正确（KJT_C1_Z3_H1L2S4 power=10.0 area=KJT photo=无图）。**唯一缺照片**：本地 Data/ 这批样本/原始文件 pt_extract 抽不出锚定照片（xl/media 有图但 drawing rels 没锚定到光功率行，has_photo 全 0），OCR 段没真照片可跑——tokenplan 后端用 PIL 假图验证过 Qwen 视觉可用，真现场照片 OCR 待有锚定图的文件再验。**V1 cwd 坑复现**：pt_batch 调 pt_extract 子进程 cwd=HERE(scripts/)，相对路径 tmp/xlsx 错位导致"rows.json 缺失"——必须 `cd scripts` 跑 + xlsx 用绝对路径规避（progress Notes 早记过，V2.0 --server-url 上传模式继承同坑，未修，沿用 V1 规避方式）。evidence：pt_batch 输出"上传 351 条 入库1"/curl GET /records total=206

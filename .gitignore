@@ -27,3 +27,6 @@ server/*.db-*
 # 容器镜像出包产物(大文件不入库)
 opt.tar
 opt.tar.gz
+
+# 本地已处理文件MD5清单(运行态)
+processed_md5.tsv

@@ -32,11 +32,61 @@ if hasattr(sys.stdout, "reconfigure"):
 BATCH_SIZE = 50   # 每批最多几行/图：与服务端一批 upsert 对齐，控制单请求体积
 UPLOAD_TIMEOUT = 300
 
+# 本地已处理 MD5 清单（避免服务端不可达/离线时重复 OCR+上传）
+# 行格式：md5 \t size \t name \t iso_time \t status
+DEFAULT_PROCESSED_MD5_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "processed_md5.tsv",
+)
+
 
 def content_md5(path):
     """对整个 xlsx 文件算 md5，返回 32 位小写十六进制（服务端白名单格式）。"""
     with open(path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
+
+
+def load_processed_md5(path=DEFAULT_PROCESSED_MD5_FILE):
+    """读本地已处理 MD5 集合。文件不存在/空 -> 空集。"""
+    done = set()
+    if not path or not os.path.exists(path):
+        return done
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                md5 = line.split("\t", 1)[0].strip().lower()
+                if len(md5) == 32 and all(c in "0123456789abcdef" for c in md5):
+                    done.add(md5)
+    except OSError:
+        return set()
+    return done
+
+
+def remember_processed_md5(md5, path=DEFAULT_PROCESSED_MD5_FILE,
+                           size=None, name=None, status="done"):
+    """追加一条本地已处理记录。同 md5 已存在则不重复写。"""
+    if not md5:
+        return
+    md5 = str(md5).strip().lower()
+    if len(md5) != 32:
+        return
+    existing = load_processed_md5(path)
+    if md5 in existing:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    import time
+    row = "\t".join([
+        md5,
+        "" if size is None else str(size),
+        "" if name is None else str(name).replace("\t", " "),
+        time.strftime("%Y-%m-%dT%H:%M:%S"),
+        status or "done",
+    ])
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(row + "\n")
 
 
 def build_upload_records(rows_json, ocr_dir, model):

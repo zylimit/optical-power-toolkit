@@ -57,20 +57,44 @@ def collect_xlsx(inputs):
     return [f for f in files if not os.path.basename(f).startswith("~$")]
 
 
-def _already_done(ctx, name, xlsx, args):
-    """增量判断：本地库按文件名查 files 表；上传模式按 content_md5 查服务端清单。"""
+def _already_done(ctx, name, xlsx, args, md5=None):
+    """增量判断：本地库按文件名；上传模式=本地MD5清单 ∪ 服务端MD5清单。
+
+    处理前先算 MD5 并记录，避免同内容改名/拷贝后重复 OCR。
+    """
     if args.local_db:
         return pt_db.file_done(ctx["conn"], name)
-    return pt_upload.content_md5(xlsx) in ctx["done_md5"]
+    if md5 is None:
+        md5 = pt_upload.content_md5(xlsx)
+    local_done = ctx.get("local_md5") or set()
+    server_done = ctx.get("done_md5") or set()
+    return md5 in local_done or md5 in server_done
+
+
+def _mark_done(ctx, args, md5, xlsx, status="done"):
+    """处理成功后写入本地 MD5 清单，并更新内存集合。"""
+    if args.local_db or not md5:
+        return
+    path = getattr(args, "processed_md5_file", None) or pt_upload.DEFAULT_PROCESSED_MD5_FILE
+    pt_upload.remember_processed_md5(
+        md5, path=path, size=os.path.getsize(xlsx), name=os.path.basename(xlsx), status=status)
+    ctx.setdefault("local_md5", set()).add(md5)
+    # 服务端清单也记一份，同进程后续文件立刻可见
+    ctx.setdefault("done_md5", set()).add(md5)
 
 
 def process_one(xlsx, ctx, args):
     name = os.path.basename(xlsx)
-    if _already_done(ctx, name, xlsx, args):
+    # 上传模式：处理前就算 MD5（去重主键），并打印便于对账
+    md5 = None
+    if not args.local_db:
+        md5 = pt_upload.content_md5(xlsx)
+        print(f"[md5] {name}: {md5}")
+    if _already_done(ctx, name, xlsx, args, md5=md5):
         if args.mode == "skip":
-            print(f"[跳过] {name}（已入库）"); return "skip"
+            print(f"[跳过] {name}（已处理 md5={md5 or name}）"); return "skip"
         if args.mode == "ask":
-            if input(f"{name} 已入库，覆盖? [y/N] ").strip().lower() != "y":
+            if input(f"{name} 已处理，覆盖? [y/N] ").strip().lower() != "y":
                 print("  跳过"); return "skip"
 
     # 写库的 model 元数据按后端定，防止 claude/codex 路线被误标成 gemini
@@ -108,8 +132,10 @@ def process_one(xlsx, ctx, args):
                 ctx["conn"].commit()
             else:
                 # 上传模式：POST 空 records 让服务端登记该文件（去重清单据 content_md5）
-                ctx["client"].upload(name, pt_upload.content_md5(xlsx),
-                                     os.path.getsize(xlsx), [], {}, model=model_label)
+                if md5 is None:
+                    md5 = pt_upload.content_md5(xlsx)
+                ctx["client"].upload(name, md5, os.path.getsize(xlsx), [], {}, model=model_label)
+                _mark_done(ctx, args, md5, xlsx, status="empty")
             print(f"[空] {name}: 无光功率行，已登记跳过")
             return "empty"
         print(f"[处理] {name}: {len(recs)} 行, {photos} 图 -> OCR ...")
@@ -136,11 +162,13 @@ def process_one(xlsx, ctx, args):
         else:
             up_recs = pt_upload.build_upload_records(rows_json, ocr_dir, model_label)
             images = pt_upload.collect_images(rows_json)
-            md5 = pt_upload.content_md5(xlsx)
+            if md5 is None:
+                md5 = pt_upload.content_md5(xlsx)
             res = ctx["client"].upload(name, md5, os.path.getsize(xlsx),
                                        up_recs, images, model=model_label)
             print(f"  [上传] {name}: {res['records_stored']} 条, {res['images_stored']} 图"
                   + (f", 内容重复于 {res['duplicate_of']}" if res.get("duplicate_of") else ""))
+            _mark_done(ctx, args, md5, xlsx, status="done")
         return "done"
     finally:
         # ④ 删临时（成功才删；失败上面已 return，保留现场）
@@ -167,6 +195,8 @@ def main():
     ap.add_argument("--export", default=None, help="处理完顺带导出 CSV 到此路径")
     ap.add_argument("--export-only", default=None, help="不处理，仅导出 CSV")
     ap.add_argument("--where", default=None, help="导出 SQL 条件，如 \"conf='高'\"")
+    ap.add_argument("--processed-md5-file", default=pt_upload.DEFAULT_PROCESSED_MD5_FILE,
+                    help="本地已处理文件 MD5 清单(TSV)，避免重复OCR/上传")
     args = ap.parse_args()
 
     # 落库出口：本地 SQLite（--local-db，V1）或上传服务端（默认）。
@@ -177,11 +207,16 @@ def main():
     else:
         conn = None
         client = pt_upload.ServerClient(args.server_url)
+        # 本地 MD5 清单先加载（服务端连不上时仍可防重复）
+        local_md5 = pt_upload.load_processed_md5(args.processed_md5_file)
         try:
-            done_md5 = client.list_done_md5()
+            server_md5 = client.list_done_md5()
         except Exception as e:
-            print(f"✗ 连不上服务端 {args.server_url}：{e}"); return
-        ctx = {"client": client, "done_md5": done_md5}
+            print(f"! 连不上服务端 {args.server_url}：{e}；仅用本地MD5清单去重（{len(local_md5)}条）")
+            server_md5 = set()
+        done_md5 = set(local_md5) | set(server_md5)
+        print(f"[去重] 本地MD5={len(local_md5)} 服务端MD5={len(server_md5)} 合并={len(done_md5)}")
+        ctx = {"client": client, "done_md5": done_md5, "local_md5": set(local_md5)}
 
     # --export / --export-only 是本地库能力，仅 --local-db 模式支持
     if args.export_only:
