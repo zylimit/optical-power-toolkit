@@ -108,27 +108,32 @@ ssh -i "$SSH_KEY" "$PAAS_HOST" "docker images optical-power-toolkit"
 
 ### 7. PaaS run 容器
 
-**方式 A——docker run（手动卷映射）**：
+> 目标机实测 Docker **18.09.0**（EulerOS PaaS）。该环境 `-p 8000:8000` 端口映射可能不生效
+> （`NetworkSettings.Ports` 为空、宿主机 8000 不监听）。**生产已验证用 `--network host`**。
+
+**方式 A——docker run（推荐，host 网络 + /srv 数据盘）**：
 
 ```bash
-ssh -i "$SSH_KEY" "$PAAS_HOST" 'cd /opt/opt && \
+# 数据落 /srv（66G 可用），不要放根盘 /
+ssh root@7.183.255.169 'mkdir -p /srv/optical-power-toolkit/data/server /srv/optical-power-toolkit/data/images && \
+  docker rm -f optical-power-toolkit-server 2>/dev/null || true && \
   docker run -d \
     --name optical-power-toolkit-server \
-    -p 8000:8000 \
-    -v $(pwd)/data/server:/app/server/data \
-    -v $(pwd)/data/images:/app/server/images \
+    --network host \
+    -v /srv/optical-power-toolkit/data/server:/app/server/data \
+    -v /srv/optical-power-toolkit/data/images:/app/server/images \
     --restart unless-stopped \
     optical-power-toolkit:latest'
 ```
 
-**方式 B——docker-compose（推荐，配置即代码）**：
+**方式 B——docker-compose**：
 
-把 `docker-compose.yml` 传到 PaaS 的 `/opt/opt/`，在 PaaS 执行：
+把 `docker-compose.yml` 传到 PaaS，改卷路径为 `/srv/...`，并加 `network_mode: host`
+（18.09 下比 ports 映射稳）。然后：
 
 ```bash
-ssh -i "$SSH_KEY" "$PAAS_HOST" 'cd /opt/opt && \
-  mkdir -p data/server data/images && \
-  docker compose up -d'
+mkdir -p /srv/optical-power-toolkit/data/server /srv/optical-power-toolkit/data/images
+docker compose up -d
 ```
 
 ### 8. 验证

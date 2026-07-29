@@ -1,16 +1,17 @@
 # 光功率工具箱 V2.0 服务端容器编排
 # 仅服务端（FastAPI + SQLite + 磁盘图存），不含 OCR
+#
+# 内网 PaaS（Docker 18.09 / EulerOS）实测：ports 映射可能不生效，
+# 故用 network_mode: host。数据落 /srv（大盘），不要放根盘。
 services:
   optical-power-toolkit-server:
     build: .
     image: optical-power-toolkit:latest
     container_name: optical-power-toolkit-server
-    ports:
-      - "8000:8000"
+    network_mode: host
     volumes:
       # DB 持久化——OPT_DB_PATH=/app/server/data/toolkit.db（Dockerfile ENV）
-      # 代码默认 server/toolkit.db 不在卷里，故 ENV 重定向进 data/
-      - ./data/server:/app/server/data
-      # 原图持久化——imagestore.IMAGES_DIR = server/images = /app/server/images
-      - ./data/images:/app/server/images
+      - /srv/optical-power-toolkit/data/server:/app/server/data
+      # 原图持久化——imagestore.IMAGES_DIR = /app/server/images
+      - /srv/optical-power-toolkit/data/images:/app/server/images
     restart: unless-stopped
