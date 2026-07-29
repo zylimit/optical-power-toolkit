@@ -30,7 +30,18 @@ def interactive_login(
 
     async def _run():
         async with async_playwright_api() as p:
-            browser = await p.chromium.launch(headless=False)
+            # VPN/内网下 playwright 自带 chromium 经常下不了；优先用本机 Chrome/Edge。
+            launch_kwargs = {"headless": False}
+            for channel in ("chrome", "msedge"):
+                try:
+                    browser = await p.chromium.launch(channel=channel, **launch_kwargs)
+                    log.info(f"[login] 使用本机浏览器 channel={channel}")
+                    break
+                except Exception as e:
+                    log.warning(f"[login] channel={channel} 启动失败: {e}")
+            else:
+                browser = await p.chromium.launch(**launch_kwargs)
+                log.info("[login] 回退 playwright 自带 chromium")
             ctx = await browser.new_context()
             closed = asyncio.Event()
 
@@ -88,7 +99,25 @@ def get_session_headers(auth_file: str = config.AUTH_FILE) -> Dict[str, str]:
     cookie_map = {}
     with sync_playwright() as p:
         # 无头模式：复用 --login 刚存的新鲜 auth.json（xgate 只在 --login 的可见窗口注入登录态）。
-        browser = p.chromium.launch(headless=True)
+        # VPN/内网下 playwright 自带 chromium 常下载失败，优先本机 Chrome/Edge。
+        browser = None
+        last_err = None
+        for channel in ("chrome", "msedge"):
+            try:
+                browser = p.chromium.launch(channel=channel, headless=True)
+                log.info(f"[browser] 使用本机浏览器 channel={channel} headless=True")
+                break
+            except Exception as e:
+                last_err = e
+                log.warning(f"[browser] channel={channel} 启动失败: {e}")
+        if browser is None:
+            try:
+                browser = p.chromium.launch(headless=True)
+                log.info("[browser] 回退 playwright 自带 chromium headless=True")
+            except Exception as e:
+                raise RuntimeError(
+                    f"无法启动浏览器（chrome/msedge/playwright均失败）。最后错误: {last_err or e}"
+                ) from e
         try:
             ctx = browser.new_context(storage_state=auth_file)
             page = ctx.new_page()
