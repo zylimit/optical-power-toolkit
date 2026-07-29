@@ -1,0 +1,42 @@
+# 客户端 OCR/上传模块——镜像只含 server/
+scripts/
+
+# 测试 / 框架 / 编辑器配置
+tests/
+.claude/
+.git/
+.gitignore
+.vscode/
+.opencode/
+.codex/
+.agents/
+.pytest_cache/
+.venv/
+
+# 规划文档（Product-Spec / DEV-PLAN / progress / README 等）
+*.md
+
+# 数据 / 临时 / 日志 / 备份
+*.db
+*.sqlite
+*.sqlite.bak
+*.backup
+data/
+Data/
+Data_duplicates/
+pt_tmp/
+pt_data.*
+pt_data.backup_*
+reports/
+*.log
+audit*.txt
+batch_run.log
+recheck_run*.log
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 密钥（绝不进镜像）
+.tokenplan_key

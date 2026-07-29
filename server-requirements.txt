@@ -1,0 +1,6 @@
+# 光功率工具箱 V2.0 服务端依赖（仅 server/ 用）
+# 区别于根 requirements.txt——那个含客户端 OCR/下载依赖（pillow/playwright/requests）
+# 服务端不调 OCR，镜像只装这三个
+fastapi==0.140.7
+uvicorn
+python-multipart

@@ -1,0 +1,16 @@
+# 光功率工具箱 V2.0 服务端容器编排
+# 仅服务端（FastAPI + SQLite + 磁盘图存），不含 OCR
+services:
+  optical-power-toolkit-server:
+    build: .
+    image: optical-power-toolkit:latest
+    container_name: optical-power-toolkit-server
+    ports:
+      - "8000:8000"
+    volumes:
+      # DB 持久化——OPT_DB_PATH=/app/server/data/toolkit.db（Dockerfile ENV）
+      # 代码默认 server/toolkit.db 不在卷里，故 ENV 重定向进 data/
+      - ./data/server:/app/server/data
+      # 原图持久化——imagestore.IMAGES_DIR = server/images = /app/server/images
+      - ./data/images:/app/server/images
+    restart: unless-stopped
