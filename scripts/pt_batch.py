@@ -160,7 +160,8 @@ def main():
     ap.add_argument("--model", default="gemini-cli", help="写库的 model 元数据标签（gemini 后端时生效）")
     ap.add_argument("--backend", choices=["gemini", "claude", "codex", "tokenplan"], default="gemini")
     ap.add_argument("--workers", type=int, default=16)
-    ap.add_argument("--downscale", type=int, default=1024)
+    ap.add_argument("--downscale", type=int, default=0,
+                    help="OCR送模前缩到该最大边(px)；0=原图不压缩(默认)")
     ap.add_argument("--tmp", default="pt_tmp", help="本地临时目录（用完即删）")
     ap.add_argument("--limit", type=int, default=None, help="本次最多处理几个(未入库的)文件，如 10")
     ap.add_argument("--export", default=None, help="处理完顺带导出 CSV 到此路径")
