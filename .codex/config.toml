@@ -1,0 +1,68 @@
+# Codex Base project configuration. Copy .codex/ with AGENTS.md and .agents/.
+# Project-local hooks run only after the repository is trusted.
+
+[features]
+hooks = true
+
+[agents]
+max_concurrent_threads_per_session = 6
+
+# Each event has one cross-platform Node dispatcher to avoid hook ordering races.
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook SessionStart"
+command_windows = "node .codex/runtime/harness.mjs hook SessionStart"
+timeout = 30
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook UserPromptSubmit"
+command_windows = "node .codex/runtime/harness.mjs hook UserPromptSubmit"
+timeout = 30
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook PreToolUse"
+command_windows = "node .codex/runtime/harness.mjs hook PreToolUse"
+timeout = 30
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook PostToolUse"
+command_windows = "node .codex/runtime/harness.mjs hook PostToolUse"
+timeout = 30
+
+[[hooks.SubagentStart]]
+[[hooks.SubagentStart.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook SubagentStart"
+command_windows = "node .codex/runtime/harness.mjs hook SubagentStart"
+timeout = 30
+
+[[hooks.SubagentStop]]
+[[hooks.SubagentStop.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook SubagentStop"
+command_windows = "node .codex/runtime/harness.mjs hook SubagentStop"
+timeout = 30
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook Stop"
+command_windows = "node .codex/runtime/harness.mjs hook Stop"
+timeout = 30
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "node .codex/runtime/harness.mjs hook SessionEnd"
+command_windows = "node .codex/runtime/harness.mjs hook SessionEnd"
+# Codex caps SessionEnd hooks at three seconds; match it to avoid startup warnings.
+timeout = 3
+
+# auto-push is intentionally not wired. External side effects require explicit opt-in.

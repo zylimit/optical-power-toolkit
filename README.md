@@ -10,6 +10,8 @@ FTTH 光功率测试数据处理工具集：从 WeLink 云空间**下载** PT Ex
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   Linux: source .venv/bin/activate
 pip install -r requirements.txt
+# 开发/自动化测试额外依赖（包含 pytest）
+pip install -r requirements-dev.txt
 playwright install chromium          # 仅下载阶段需要
 ```
 - **OCR 直连 Gemini**：设置环境变量 `GEMINI_API_KEY`（Google API key）。
@@ -31,6 +33,7 @@ optical-power-toolkit/
     pt_pipeline.py         # 单次跑通（extract→ocr→merge→csv，出 CSV 不入库）
   docs/Product-Spec.md     # 完整规格
   requirements.txt
+  requirements-dev.txt     # 开发和自动化测试依赖
 ```
 
 ## 用法

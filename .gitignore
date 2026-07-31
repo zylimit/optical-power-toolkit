@@ -13,11 +13,9 @@ Data_duplicates/
 *.sqlite
 *.log
 scripts/pt_ocr_tmp_*/
-.codex/
+# Codex Base configuration is project source; its runtime state has its own .gitignore.
 .claude/scheduled_tasks.lock
-.agents/
 .vscode/
-AGENTS.md
 audit*.txt
 server/images/
 server/*.db

@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "riskChecks": {
+    "low": [
+      "harness-validate",
+      "python-compile"
+    ],
+    "medium": [
+      "harness-validate",
+      "python-compile",
+      "python-tests"
+    ],
+    "high": [
+      "harness-validate",
+      "python-compile",
+      "python-tests"
+    ]
+  },
+  "conservativeChecks": [
+    "harness-validate",
+    "python-compile",
+    "python-tests"
+  ],
+  "checks": [
+    {
+      "id": "harness-validate",
+      "class": "structure",
+      "executable": "node",
+      "args": [
+        ".codex/runtime/harness.mjs",
+        "validate"
+      ],
+      "cwd": ".",
+      "platform": [
+        "win32",
+        "linux",
+        "darwin"
+      ],
+      "timeoutMs": 30000,
+      "dependencies": [],
+      "resourceLocks": [
+        "harness-state"
+      ],
+      "required": true,
+      "allowFastSkip": false
+    },
+    {
+      "id": "python-compile",
+      "class": "build",
+      "executable": "node",
+      "args": [
+        ".codex/harness/scripts/run-python-check.mjs",
+        "compile"
+      ],
+      "cwd": ".",
+      "platform": [
+        "win32",
+        "linux",
+        "darwin"
+      ],
+      "timeoutMs": 30000,
+      "dependencies": [
+        "harness-validate"
+      ],
+      "resourceLocks": [
+        "python-environment"
+      ],
+      "required": true,
+      "allowFastSkip": false
+    },
+    {
+      "id": "python-tests",
+      "class": "test",
+      "executable": "node",
+      "args": [
+        ".codex/harness/scripts/run-python-check.mjs",
+        "test"
+      ],
+      "cwd": ".",
+      "platform": [
+        "win32",
+        "linux",
+        "darwin"
+      ],
+      "timeoutMs": 120000,
+      "dependencies": [
+        "python-compile"
+      ],
+      "resourceLocks": [
+        "python-environment"
+      ],
+      "required": true,
+      "allowFastSkip": true
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-base/verification-matrix.schema.json",
+  "type": "object",
+  "required": ["version", "riskChecks", "conservativeChecks", "checks"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "riskChecks": {"type": "object"},
+    "conservativeChecks": {"type": "array", "items": {"type": "string"}},
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "class", "cwd", "timeoutMs", "dependencies", "resourceLocks", "required", "allowFastSkip"],
+        "properties": {
+          "id": {"type": "string"},
+          "class": {"enum": ["structure", "lint", "test", "build", "security", "review", "release"]},
+          "executable": {"type": "string"},
+          "args": {"type": "array", "items": {"type": "string"}},
+          "command": {"type": "string"},
+          "cwd": {"type": "string"},
+          "platform": {"type": "array", "items": {"enum": ["win32", "linux", "darwin"]}},
+          "timeoutMs": {"type": "integer", "minimum": 1},
+          "dependencies": {"type": "array", "items": {"type": "string"}},
+          "resourceLocks": {"type": "array", "items": {"type": "string"}},
+          "required": {"type": "boolean"},
+          "allowFastSkip": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

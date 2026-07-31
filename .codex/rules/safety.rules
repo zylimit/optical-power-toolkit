@@ -1,0 +1,110 @@
+# Codex Base project rules. Defense in depth only; sandbox and user approval remain authoritative.
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "This can discard uncommitted work. Preserve the tree and use a scoped, reviewed alternative.",
+    match = ["git reset --hard HEAD", "git reset --hard origin/main"],
+    not_match = ["git reset --soft HEAD~1", "git status --short"],
+)
+
+prefix_rule(
+    pattern = ["git", "clean", ["-fd", "-df", "-fdx", "-xdf", "-fxd", "-dfx"]],
+    decision = "forbidden",
+    justification = "This can recursively delete untracked or ignored files. Inspect candidates and remove only approved paths.",
+    match = ["git clean -fd", "git clean -fdx"],
+    not_match = ["git clean -n", "git status"],
+)
+
+prefix_rule(
+    pattern = ["rm", ["-rf", "-fr"]],
+    decision = "forbidden",
+    justification = "Recursive forced deletion is too broad. Resolve and delete an explicitly approved target with a scoped command.",
+    match = ["rm -rf build", "rm -fr .cache"],
+    not_match = ["rm file.txt", "git status"],
+)
+
+prefix_rule(
+    pattern = ["rm", ["-r", "--recursive"], ["-f", "--force"]],
+    decision = "forbidden",
+    justification = "Recursive forced deletion is too broad. Use a scoped, reviewed deletion.",
+    match = ["rm -r -f build"],
+)
+
+prefix_rule(
+    pattern = [["Remove-Item", "remove-item"], ["-Recurse", "-recurse"], ["-Force", "-force"]],
+    decision = "forbidden",
+    justification = "Recursive forced deletion is too broad. Use -LiteralPath on one approved target without recursive force.",
+    match = ["Remove-Item -Recurse -Force build"],
+)
+
+prefix_rule(
+    pattern = [["diskpart", "mkfs", "format"]],
+    decision = "forbidden",
+    justification = "Disk formatting and partition tools are outside repository work and can destroy machine data.",
+    match = ["diskpart /s wipe.txt", "mkfs /dev/sdb", "format D:"],
+)
+
+prefix_rule(
+    pattern = [["rm", "del", "erase", "rmdir", "rd", "Remove-Item", "remove-item"]],
+    decision = "prompt",
+    justification = "Deleting repository files requires an explicit target and user authorization.",
+    match = ["rm file.txt", "del file.txt", "Remove-Item -LiteralPath file.txt"],
+)
+
+prefix_rule(
+    pattern = ["git", ["push", "commit", "tag", "restore", "checkout", "rebase"]],
+    decision = "prompt",
+    justification = "Git history, remote state, or working-tree mutations require explicit user authorization.",
+    match = ["git push origin main", "git commit -m change", "git restore file.txt"],
+    not_match = ["git status --short", "git diff --stat", "git log -1"],
+)
+
+prefix_rule(
+    pattern = [["npm", "pnpm", "yarn"], ["install", "add", "ci", "publish"]],
+    decision = "prompt",
+    justification = "Dependency or package mutations require explicit authorization and lockfile review.",
+    match = ["npm install", "pnpm add zod", "yarn publish"],
+)
+
+prefix_rule(
+    pattern = [["pip", "pip3", "uv", "poetry", "cargo", "go"], ["install", "add", "sync", "get"]],
+    decision = "prompt",
+    justification = "Dependency or global tool changes require explicit authorization.",
+    match = ["pip install ruff", "uv add fastapi", "cargo install cargo-audit", "go get example.com/mod"],
+)
+
+prefix_rule(
+    pattern = [["sudo", "apt", "apt-get", "winget", "choco", "brew"]],
+    decision = "prompt",
+    justification = "Privilege, machine, or global package changes require explicit authorization.",
+    match = ["sudo apt update", "winget install Git.Git", "brew install node"],
+)
+
+prefix_rule(
+    pattern = [["kill", "pkill", "killall", "taskkill", "Stop-Process", "stop-process"]],
+    decision = "prompt",
+    justification = "Terminating processes or ports requires explicit coordination and post-action state checks.",
+    match = ["kill 1234", "taskkill /PID 1234", "Stop-Process -Id 1234"],
+)
+
+prefix_rule(
+    pattern = [["docker", "podman"], ["push", "login"]],
+    decision = "prompt",
+    justification = "Registry authentication and remote publication require explicit authorization.",
+    match = ["docker push example/app:1.0", "podman login registry.example.com"],
+)
+
+prefix_rule(
+    pattern = [["kubectl", "helm", "terraform"], ["apply", "delete", "upgrade", "install", "uninstall", "destroy"]],
+    decision = "prompt",
+    justification = "Infrastructure and deployment mutations require an explicit target and authorization.",
+    match = ["kubectl apply -f deploy.yaml", "helm upgrade app chart", "terraform destroy"],
+)
+
+prefix_rule(
+    pattern = ["gh", ["pr", "issue", "release"], ["create", "merge", "close", "delete"]],
+    decision = "prompt",
+    justification = "Creating or mutating remote GitHub objects requires explicit authorization.",
+    match = ["gh pr create --title change", "gh release create v1.0.0"],
+)

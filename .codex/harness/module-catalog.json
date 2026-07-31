@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "globalPaths": [
+    "AGENTS.md",
+    ".agents/**",
+    ".codex/**",
+    ".dockerignore",
+    ".gitignore",
+    "Product-Spec.md",
+    "Product-Spec-CHANGELOG.md",
+    "DEV-PLAN.md",
+    "README.md",
+    "progress.md",
+    "Dockerfile",
+    "docker-compose.yml",
+    "deploy/**",
+    "reports/**",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "server-requirements.txt",
+    "tests/**"
+  ],
+  "ignored": [
+    {
+      "pattern": ".agents/feedback/**",
+      "reason": "private framework feedback"
+    },
+    {
+      "pattern": ".agents/EVOLUTION.md",
+      "reason": "framework evolution ledger"
+    }
+  ],
+  "modules": [
+    {
+      "id": "client-pipeline",
+      "root": "scripts",
+      "paths": [
+        "pt_*.py"
+      ],
+      "dependsOn": [],
+      "shared": true,
+      "owners": [
+        "implementer",
+        "tester"
+      ],
+      "contracts": [
+        "Product-Spec.md",
+        "DEV-PLAN.md"
+      ],
+      "capsule": ".codex/harness/templates/MODULE-CAPSULE.md",
+      "tests": [
+        "tests/test_pt_address.py",
+        "tests/test_pt_ocr_tokenplan.py",
+        "tests/test_pt_recheck.py",
+        "tests/test_pt_recheck_units.py",
+        "tests/test_pt_report.py",
+        "tests/test_pt_upload.py"
+      ],
+      "verification": [
+        "python-compile",
+        "python-tests"
+      ]
+    },
+    {
+      "id": "onebox-downloader",
+      "root": "scripts",
+      "paths": [
+        "onebox_download.py",
+        "onebox_downloader/**"
+      ],
+      "dependsOn": [],
+      "shared": false,
+      "owners": [
+        "implementer",
+        "tester"
+      ],
+      "contracts": [
+        "Product-Spec.md"
+      ],
+      "capsule": ".codex/harness/templates/MODULE-CAPSULE.md",
+      "tests": [],
+      "verification": [
+        "python-compile",
+        "python-tests"
+      ]
+    },
+    {
+      "id": "api-server",
+      "root": "server",
+      "paths": [
+        "**"
+      ],
+      "dependsOn": [],
+      "shared": true,
+      "owners": [
+        "implementer",
+        "tester"
+      ],
+      "contracts": [
+        "Product-Spec.md",
+        "DEV-PLAN.md",
+        "deploy/README.md"
+      ],
+      "capsule": ".codex/harness/templates/MODULE-CAPSULE.md",
+      "tests": [
+        "tests/test_imagestore.py",
+        "tests/test_server_query.py",
+        "tests/test_server_upload.py"
+      ],
+      "verification": [
+        "python-compile",
+        "python-tests"
+      ]
+    }
+  ]
+}

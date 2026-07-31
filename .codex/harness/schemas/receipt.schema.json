@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-base/receipt.schema.json",
+  "type": "object",
+  "required": ["version", "kind", "taskId", "baseCommit", "fingerprint", "planHash", "checkId", "argvHash", "cwd", "toolVersion", "executorRole", "executorId", "status", "durationMs", "evidencePath", "evidenceBytes", "evidenceHash", "createdAt", "fastModeWindow", "contentHash"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"const": "verification"},
+    "status": {"enum": ["PASS", "FAIL", "BLOCKED", "SKIPPED"]},
+    "executorRole": {"type": "string"},
+    "executorId": {"type": "string"},
+    "fastModeWindow": {"type": ["string", "null"]},
+    "evidencePath": {"type": "string", "minLength": 1},
+    "evidenceBytes": {"type": "integer", "minimum": 0},
+    "evidenceHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contentHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

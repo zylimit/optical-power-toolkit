@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-base/waiver.schema.json",
+  "type": "object",
+  "required": ["version", "kind", "taskId", "checkId", "fingerprint", "approver", "reason", "expiresAt", "compensation", "followUp", "approvalEvidence", "createdAt", "contentHash"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"const": "waiver"},
+    "contentHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

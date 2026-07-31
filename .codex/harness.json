@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "stateDir": ".codex/harness-state",
+  "catalogFile": ".codex/harness/module-catalog.json",
+  "verificationFile": ".codex/harness/verification-matrix.json",
+  "outputLimits": {
+    "hookChars": 4000,
+    "modelChars": 12000,
+    "evidenceChars": 200000
+  },
+  "context": {
+    "totalChars": 120000,
+    "fileChars": 20000,
+    "diffChars": 40000,
+    "maxFiles": 40
+  },
+  "catalog": {
+    "maxTrackedPaths": 100000,
+    "maxChangedPaths": 10000
+  },
+  "locks": {
+    "timeoutMs": 15000,
+    "staleMs": 120000,
+    "pollMs": 25
+  },
+  "security": {
+    "dependencyDirs": [
+      "node_modules",
+      "vendor",
+      ".venv",
+      "venv",
+      "dist",
+      "build",
+      "coverage"
+    ],
+    "secretNames": [
+      ".env",
+      ".env.local",
+      ".env.production",
+      ".env.development",
+      "id_rsa",
+      "id_ed25519",
+      "credentials.json",
+      "secrets.json"
+    ],
+    "secretExtensions": [
+      ".pem",
+      ".key",
+      ".p12",
+      ".pfx"
+    ],
+    "allowedSecretTemplates": [
+      ".env.example",
+      ".env.sample",
+      ".env.template"
+    ]
+  }
+}
